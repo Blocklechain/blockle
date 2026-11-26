@@ -72,7 +72,14 @@ CREATE TABLE IF NOT EXISTS deposit_seen (
   amount      TEXT NOT NULL,
   txid        TEXT,
   confirmations INTEGER NOT NULL,
-  -- 'credited' | 'pending' | 'unattributed' | 'unreadable'
+  -- 'credited' | 'pending' | 'unattributed' | 'unreadable' | 'disappeared'
+  --
+  -- 'disappeared' is the only one of these that is written by something other
+  -- than a crediting decision. See expireVanishedPending: a transaction can be
+  -- seen, recorded 'pending', and then leave the chain entirely — dropped from
+  -- a mempool, or replaced by a higher fee — at which point the row would
+  -- otherwise read "N of 32 confirmations" forever. That is rare on a
+  -- custodian's feed and routine on EVM.
   outcome     TEXT NOT NULL,
   user_id     TEXT,
   detail      TEXT,
@@ -92,7 +99,111 @@ export interface WatcherResult {
 	readonly pending: number;
 	readonly unattributed: number;
 	readonly unreadable: number;
+	/**
+	 * Pending rows written off because their transaction left the chain.
+	 *
+	 * Reported rather than merely counted: it is the only visible signal that a
+	 * chain is dropping or replacing transactions, and a rail that starts
+	 * producing these every pass is a rail whose feed or confirmation policy
+	 * needs looking at.
+	 */
+	readonly disappeared: number;
 	readonly errors: readonly string[];
+}
+
+/**
+ * HOW LONG A PENDING ROW MAY GO UNMENTIONED BEFORE IT IS WRITTEN OFF, PER
+ * CHAIN — and why it is per chain rather than one constant.
+ *
+ * A transaction can be seen, recorded `pending`, and then leave the chain
+ * entirely: dropped from a mempool, or replaced by a higher-fee version of
+ * itself. The row would otherwise read "3 of 32 confirmations" forever, which
+ * is the single most alarming thing a customer can be shown about money they
+ * sent, and it is not true.
+ *
+ * The threshold cannot be shared, because "the feed stopped mentioning it" is
+ * evidence at wildly different speeds: a custodian's feed pages over a window
+ * measured in days, while an EVM scanner re-reads a handful of blocks and a
+ * dropped transaction is absent within a minute. Set it too low on a slow feed
+ * and a live deposit is written off while it is still confirming.
+ *
+ * NOTHING HERE MOVES MONEY. `disappeared` is a statement about a RECORD, not a
+ * reversal: a pending row has no ledger entry behind it by construction, so
+ * writing it off posts nothing. If the transaction comes back, the next pass
+ * records it again under the same (transfer_id, address) primary key and it
+ * confirms normally.
+ */
+export interface VanishPolicy {
+	/** Seconds a pending row may go unmentioned by a feed that DID answer. */
+	readonly staleSeconds: number;
+}
+
+/**
+ * Write off the pending rows of one chain whose transaction the feed no longer
+ * mentions. Returns how many were written off.
+ *
+ * SAFE ONLY BECAUSE OF TWO CONDITIONS THE CALLER ENFORCES, both worth stating
+ * where the UPDATE is:
+ *
+ *   1. The feed for this chain ANSWERED this pass. "The feed did not mention
+ *      it" is evidence; "the feed did not answer" is nothing at all, and
+ *      treating them alike would write off every in-flight deposit on a chain
+ *      during an endpoint outage.
+ *   2. `seen` is complete for the whole pass before this is called, because one
+ *      transfer can pay two of our addresses and both rows must be spared.
+ *
+ * A `credited` row is never touched: the WHERE clause names `pending` only, so
+ * a chain whose feed forgets a credited deposit cannot un-credit it.
+ */
+export function expireVanishedPending(
+	db: Database,
+	args: {
+		custodyId: string;
+		staleSeconds: number;
+		/** `${custodyId}\u0000${transferId}` for every transfer seen this pass. */
+		seen: ReadonlySet<string>;
+		nowMs: number;
+	},
+): number {
+	const asset = settlementAsset(args.custodyId);
+	const network = networkOf(args.custodyId) ?? "";
+	const rows = db
+		.prepare(
+			`SELECT transfer_id, address, last_seen FROM deposit_seen
+			  WHERE outcome = 'pending' AND asset = ? AND network = ?`,
+		)
+		.all(asset, network) as {
+		transfer_id: string;
+		address: string;
+		last_seen: string;
+	}[];
+
+	const cutoff = args.nowMs - Math.max(0, args.staleSeconds) * 1000;
+	const mark = db.prepare(
+		`UPDATE deposit_seen
+		    SET outcome = 'disappeared', last_seen = ?, detail = ?
+		  WHERE transfer_id = ? AND address = ? AND outcome = 'pending'`,
+	);
+	let n = 0;
+	for (const r of rows) {
+		if (args.seen.has(`${args.custodyId}\u0000${r.transfer_id}`)) continue;
+		const last = Date.parse(r.last_seen);
+		// AN UNPARSEABLE TIMESTAMP IS LEFT ALONE. It cannot be shown to be
+		// stale, and writing off a row on a date we could not read would be
+		// deciding about a customer's deposit from a field we do not trust.
+		if (!Number.isFinite(last) || last > cutoff) continue;
+		mark.run(
+			new Date(args.nowMs).toISOString(),
+			`the ${args.custodyId} feed answered and no longer reports this ` +
+				`transaction, and it has not been seen for ${args.staleSeconds}s. ` +
+				"It was dropped or replaced before confirming. Nothing was credited " +
+				"and nothing is owed; a new transaction would be recorded afresh.",
+			r.transfer_id,
+			r.address,
+		);
+		n++;
+	}
+	return n;
 }
 
 export interface WatcherDeps {
@@ -108,7 +219,7 @@ export interface WatcherDeps {
 	 */
 	readonly walletFor: (custodyId: string) => Promise<{ coin: string; walletId: string } | undefined>;
 	/**
-	 * Chains we watch ourselves, keyed by settlement asset.
+	 * Chains we watch ourselves, keyed by CUSTODY ID.
 	 *
 	 * BitGo will not custody the small proof-of-work coins, so their deposits
 	 * arrive at a daemon we run and have to be read from it. Without this the
@@ -117,8 +228,44 @@ export interface WatcherDeps {
 	 * nothing would ever credit.
 	 *
 	 * Absent means BitGo for everything, which is the old behaviour exactly.
+	 *
+	 * KEYED BY CUSTODY ID, NOT BY SETTLEMENT ASSET, AND THE DIFFERENCE IS A
+	 * LATENT MIS-POSTING THAT WOULD HAVE SURFACED ON THE FIRST TOKEN RAIL.
+	 *
+	 * This map used to be keyed by settlement asset and read with
+	 * `nodeFeeds.get(asset)` from inside the loop below — a loop that iterates
+	 * every CHAIN-QUALIFIED custody id of each asset, of which USDT has four.
+	 * So a single self-custodied USDT adapter would have been polled four
+	 * times, once per network, each pass attributing its rows to whichever
+	 * network the loop happened to be on. The ledger's replay check would have
+	 * prevented a double credit, because the idempotency key is identical
+	 * across those four passes — so nothing would have looked broken. But the
+	 * CUSTODY posting lands under whichever network ran FIRST, which means an
+	 * ERC-20 deposit booked as TRC-20 inventory: reconciliation still balances
+	 * in total while every per-network figure is wrong, and the per-network
+	 * figures are what a shortfall is measured against. `deposit_seen`'s
+	 * (transfer_id, address) primary key would have collided across networks
+	 * for the same reason.
+	 *
+	 * It was harmless ONLY because no token has ever been node-fed: every
+	 * current entry is a single-chain native coin, where the custody id and the
+	 * settlement asset are the same string, so this change moves no existing
+	 * rail. It is fixed now rather than when the first token rail is built,
+	 * because a defect that costs nothing today and corrupts inventory the day
+	 * someone adds a token is exactly the kind that gets discovered by the
+	 * reconciler halting a healthy asset.
 	 */
 	readonly nodeFeeds?: ReadonlyMap<string, ChainAdapter>;
+	/**
+	 * PER-CHAIN WRITE-OFF POLICY FOR PENDING ROWS WHOSE TRANSACTION IS GONE.
+	 *
+	 * Keyed by CUSTODY ID, like `nodeFeeds`, so a token rail cannot inherit its
+	 * chain's threshold by accident. Absent — the default — means no row is
+	 * ever written off, which is the behaviour every live rail has today: an
+	 * opt-in per chain whose feed's forgetting speed has actually been
+	 * measured. See `VanishPolicy` for why one shared constant cannot work.
+	 */
+	readonly vanishPolicy?: ReadonlyMap<string, VanishPolicy>;
 	readonly assets: readonly string[];
 	readonly now?: () => number;
 	/** Per-poll page size. */
@@ -134,6 +281,30 @@ export interface WatcherDeps {
  * `deposit:<transferId>:<address>`, which stays unique as long as the
  * transfer id carries the address. It does: the id is the txid, and a txid
  * paying two of our addresses yields two rows with different addresses.
+ *
+ * EXCEPT ON EVM, WHERE THAT LAST SENTENCE IS FALSE TWICE OVER — WHICH IS WHAT
+ * `ref` IS FOR.
+ *
+ * One EVM transaction can pay the SAME address more than once through internal
+ * calls, and one can emit several ERC-20 Transfer events to the same address.
+ * Both produce two arrivals sharing a (txid, address) pair, so the second one
+ * would be swallowed by the ledger's replay check and the customer
+ * under-credited WITH NO ERROR ANYWHERE. And the same secp256k1 address
+ * receives on Ethereum, BSC and Polygon by construction, so (txid, address) is
+ * not unique across chains either.
+ *
+ * So an adapter that knows its arrivals need a finer identity sets `ref` to a
+ * chain-qualified one, and THAT becomes the transfer id — which makes both the
+ * ledger's idempotency key and `deposit_seen`'s (transfer_id, address) primary
+ * key unique, with no migration and no second code path.
+ *
+ * WHY THE OLD SPELLING IS KEPT WHEN `ref` IS ABSENT, RATHER THAN SWITCHING
+ * EVERYTHING TO THE BETTER KEY: the idempotency key is what stops a deposit
+ * being paid twice. Changing it for the rails already live would mean every
+ * already-credited deposit still inside the custodian's recent window arriving
+ * under a NEW key, unrecognised by the ledger's replay check, and credited a
+ * second time. On a live mainnet venue. The better key therefore applies only
+ * where a rail asks for it.
  */
 async function nodeTransfers(
 	adapter: ChainAdapter,
@@ -141,7 +312,7 @@ async function nodeTransfers(
 	const rows = await adapter.incoming();
 	return {
 		transfers: rows.map((r): IncomingTransfer => ({
-			id: r.txid,
+			id: r.ref ?? r.txid,
 			txid: r.txid,
 			coin: adapter.symbol.toLowerCase(),
 			// The daemon reports a confirmation depth, not a wall-clock time.
@@ -179,7 +350,22 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 	let pending = 0;
 	let unattributed = 0;
 	let unreadable = 0;
+	let disappeared = 0;
 	const errors: string[] = [];
+
+	/*
+	 * WHAT THIS PASS ACTUALLY SAW, and which chains answered at all.
+	 *
+	 * Both are inputs to `expireVanishedPending`, and the second one is the
+	 * reason it is safe. A feed that throws leaves its chain OUT of
+	 * `feedReadThisPass`, so none of its pending rows are judged — because the
+	 * evidence that a transaction has left the chain is "the feed answered and
+	 * did not mention it", and a feed that did not answer is not evidence of
+	 * anything. Without that distinction a two-hour endpoint outage would mark
+	 * every in-flight deposit on that chain as having vanished.
+	 */
+	const seenThisPass = new Set<string>();
+	const feedReadThisPass = new Set<string>();
 
 	// Every chain-qualified custody id across the listed assets. USDT has four.
 	const chains: string[] = [];
@@ -201,8 +387,15 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 		 * Resolved before the wallet lookup, because a node-custodied coin has
 		 * no custodian wallet and asking for one would skip it entirely —
 		 * which is exactly the bug this fixes.
+		 *
+		 * BY CUSTODY ID, which is the loop variable rather than the settlement
+		 * asset derived from it. See `WatcherDeps.nodeFeeds` for the mis-posting
+		 * the old `get(asset)` would have produced the day a token rail was
+		 * node-fed. For every feed that exists today the two strings are
+		 * identical, so this is a no-op on the live rails and a correctness fix
+		 * for the next one.
 		 */
-		const node = deps.nodeFeeds?.get(asset);
+		const node = deps.nodeFeeds?.get(custodyId);
 
 		let wallet: { coin: string; walletId: string } | undefined =
 			node === undefined ? undefined : { coin: asset, walletId: "node" };
@@ -247,10 +440,12 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 			);
 			continue;
 		}
+		feedReadThisPass.add(custodyId);
 
 		const needed = confirmationsFor(asset, network);
 
 		for (const t of page.transfers) {
+			seenThisPass.add(`${custodyId}\u0000${t.id}`);
 			// A transfer BitGo itself calls failed or removed is not a deposit.
 			if (t.state === "failed" || t.state === "removed") continue;
 
@@ -382,6 +577,24 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 		}
 	}
 
+	/*
+	 * PENDING ROWS WHOSE TRANSACTION HAS LEFT THE CHAIN.
+	 *
+	 * Run after the whole pass rather than inside the per-chain loop, because
+	 * `seenThisPass` has to be complete first: a transfer paying two of our
+	 * addresses touches two rows, and a chain whose feed failed must not have its
+	 * rows judged at all.
+	 */
+	for (const [custodyId, policy] of deps.vanishPolicy ?? []) {
+		if (!feedReadThisPass.has(custodyId)) continue;
+		disappeared += expireVanishedPending(deps.db, {
+			custodyId,
+			staleSeconds: policy.staleSeconds,
+			seen: seenThisPass,
+			nowMs: now,
+		});
+	}
+
 	// THE HEARTBEAT IS THE LAST THING. Written only after a full pass, so a
 	// runner that dies mid-cycle does not report itself healthy — which is the
 	// whole reason the preflight reads heartbeats rather than unit state.
@@ -390,10 +603,19 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 		"deposit-watcher",
 		`${scanned} seen, ${credited} credited, ${pending} pending, ` +
 			`${unattributed} unattributed` +
+			(disappeared > 0 ? `, ${disappeared} disappeared` : "") +
 			(errors.length > 0 ? `, ${errors.length} error(s)` : ""),
 	);
 
-	return { scanned, credited, pending, unattributed, unreadable, errors };
+	return {
+		scanned,
+		credited,
+		pending,
+		unattributed,
+		unreadable,
+		disappeared,
+		errors,
+	};
 }
 
 function record(

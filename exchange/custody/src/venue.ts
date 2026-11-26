@@ -691,6 +691,58 @@ export function priceKey(price: bigint): string {
 	return s.padStart(PRICE_KEY_WIDTH, "0");
 }
 
+/** The columns both reservation views read. */
+interface OpenOrderRow {
+	account_id: string;
+	market: string;
+	side: string;
+	price: string;
+	base_total: string;
+	base_filled: string;
+}
+
+/**
+ * WHAT ONE OPEN ORDER HAS ALREADY LAID CLAIM TO, and in which asset.
+ *
+ * A resting buy has claimed quote for the part still unfilled, at its own
+ * limit price; a resting sell has claimed that much base. `undefined` means
+ * the row claims nothing — a fully-filled row still marked open, or an order
+ * on a market that is no longer listed.
+ *
+ * FACTORED OUT SO THERE IS EXACTLY ONE OF IT. `Venue.reserved()` (per
+ * account, what `placeOrder` and the withdrawal path enforce against) and
+ * `Venue.reservationsByAsset()` (venue-wide, what the operator treasury view
+ * displays) both go through here. Two hand-rolled copies of this arithmetic
+ * would be two answers to "how much of this customer's balance is spoken
+ * for", and the moment they disagreed the operator console would be
+ * contradicting the endpoint that actually refuses the withdrawal.
+ *
+ * ALL BIGINT, NEVER A CAST IN SQL. `price`, `base_total` and `base_filled`
+ * are TEXT because an 18-decimal amount overflows SQLite's 64-bit INTEGER,
+ * and `CAST` clamps at the boundary instead of failing — which is how this
+ * venue once published a price level's depth as int64-max. See the header of
+ * this file.
+ */
+function reservationOf(
+	r: OpenOrderRow,
+): { asset: string; amount: bigint } | undefined {
+	const m = MARKETS.find((x) => x.symbol === r.market);
+	if (m === undefined) return undefined;
+	const left = BigInt(r.base_total) - BigInt(r.base_filled);
+	if (left <= 0n) return undefined;
+	return r.side === "buy"
+		? {
+				asset: m.quote,
+				amount: quoteFor(
+					left,
+					BigInt(r.price),
+					assetDef(m.base).decimals,
+					m.priceDecimals,
+				),
+			}
+		: { asset: m.base, amount: left };
+}
+
 export class Venue {
 	constructor(
 		private readonly db: Database,
@@ -874,31 +926,74 @@ export class Venue {
 	reserved(accountId: string): Map<string, bigint> {
 		const rows = this.db
 			.prepare(
-				`SELECT market, side, price, base_total, base_filled FROM ord
+				`SELECT account_id, market, side, price, base_total, base_filled FROM ord
 				  WHERE account_id = ? AND state = 'open'`,
 			)
-			.all(accountId) as {
-			market: string;
-			side: string;
-			price: string;
-			base_total: string;
-			base_filled: string;
-		}[];
+			.all(accountId) as OpenOrderRow[];
 
 		const out = new Map<string, bigint>();
 		for (const r of rows) {
-			const m = MARKETS.find((x) => x.symbol === r.market);
-			if (m === undefined) continue;
-			const left = BigInt(r.base_total) - BigInt(r.base_filled);
-			if (left <= 0n) continue;
-			const asset = r.side === "buy" ? m.quote : m.base;
-			const amount =
-				r.side === "buy"
-					? quoteFor(left, BigInt(r.price), assetDef(m.base).decimals, m.priceDecimals)
-					: left;
-			out.set(asset, (out.get(asset) ?? 0n) + amount);
+			const claim = reservationOf(r);
+			if (claim === undefined) continue;
+			out.set(claim.asset, (out.get(claim.asset) ?? 0n) + claim.amount);
 		}
 		return out;
+	}
+
+	/**
+	 * EVERY open order's claim, as asset -> account -> units.
+	 *
+	 * The operator treasury view needs two things this answers in one pass:
+	 * how much of each asset the whole venue has committed to resting orders,
+	 * and which accounts those commitments belong to. The alternative — call
+	 * `reserved()` once per customer — is one query per account and, worse,
+	 * cannot see an account that has orders but no ledger postings.
+	 *
+	 * IT SHARES `reservationOf` WITH `reserved()` ABOVE, DELIBERATELY. This is
+	 * the one figure in the treasury view that is NOT backed by the ledger's
+	 * hash chain: a reservation is derived from the order table, so a second
+	 * hand-rolled derivation of it would be a number that could disagree with
+	 * the one `placeOrder` and the withdrawal path actually enforce. An
+	 * operator screen that says an account has 3 ETH available while the
+	 * withdrawal endpoint refuses on 2 is worse than no screen.
+	 *
+	 * `skipped` counts open orders whose market is no longer in MARKETS. Those
+	 * are silently ignored when computing a claim — see `reservationOf` — and
+	 * that means reserved is UNDERSTATED by however much they hold. For a
+	 * customer the clamp is harmless; for an operator it is a finding, so the
+	 * count is returned rather than swallowed.
+	 */
+	reservationsByAsset(): {
+		byAsset: Map<string, Map<string, bigint>>;
+		skipped: number;
+	} {
+		const rows = this.db
+			.prepare(
+				`SELECT account_id, market, side, price, base_total, base_filled FROM ord
+				  WHERE state = 'open'`,
+			)
+			.all() as OpenOrderRow[];
+
+		const byAsset = new Map<string, Map<string, bigint>>();
+		let skipped = 0;
+		for (const r of rows) {
+			if (MARKETS.find((x) => x.symbol === r.market) === undefined) {
+				skipped++;
+				continue;
+			}
+			const claim = reservationOf(r);
+			if (claim === undefined) continue;
+			let perAccount = byAsset.get(claim.asset);
+			if (perAccount === undefined) {
+				perAccount = new Map<string, bigint>();
+				byAsset.set(claim.asset, perAccount);
+			}
+			perAccount.set(
+				r.account_id,
+				(perAccount.get(r.account_id) ?? 0n) + claim.amount,
+			);
+		}
+		return { byAsset, skipped };
 	}
 
 	/**

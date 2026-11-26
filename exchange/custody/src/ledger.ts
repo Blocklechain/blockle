@@ -127,6 +127,21 @@ export interface PostRequest {
 	readonly note?: string;
 }
 
+/**
+ * What the venue owes in one settlement asset, split by whom it is owed to.
+ *
+ * `total` is the figure reconciliation compares against custody. The three
+ * parts are what an operator needs in order to read that figure: a rising
+ * `fees` is revenue, a rising `user` is deposits, and they are not the same
+ * news. See `Ledger.liabilityBreakdown`.
+ */
+export interface LiabilityBreakdown {
+	readonly user: bigint;
+	readonly fees: bigint;
+	readonly inflight: bigint;
+	readonly total: bigint;
+}
+
 export interface LedgerTx {
 	readonly id: number;
 	readonly reason: Reason;
@@ -477,11 +492,45 @@ export class Ledger {
 		return out;
 	}
 
-	/** Total liability for a settlement asset: users + fees + in-flight. */
-	liabilities(symbol: string): bigint {
+	/**
+	 * Liability for a settlement asset, SPLIT BY WHO IS OWED.
+	 *
+	 *   user      what customers are entitled to
+	 *   fees      the venue's own accrued revenue, not yet swept
+	 *   inflight  withdrawals already debited from a customer but not yet
+	 *             confirmed on chain — still ours to hold, not yet gone
+	 *   total     the sum, and the number the reconciler compares to custody
+	 *
+	 * WHY THIS EXISTS AND WHY `liabilities()` NOW DELEGATES TO IT.
+	 *
+	 * The operator treasury view has to show "owed to customers" and "ours"
+	 * separately — an operator who cannot tell those apart cannot tell a
+	 * healthy fee balance from a customer liability. The obvious way to get
+	 * that is a second query per kind, and that is precisely the trap: there
+	 * would then be two independent derivations of the same figure, and the
+	 * day they disagreed an operator would have no way to know which to
+	 * believe. Two numbers that can disagree is how someone stops trusting
+	 * both.
+	 *
+	 * So the lump sum is DERIVED from the breakdown rather than computed
+	 * beside it. One query, one set of rows, one summation; `liabilities()` is
+	 * `breakdown.total` by construction, so reconcile.ts and the treasury
+	 * panel cannot drift apart even if someone later changes the kind list.
+	 *
+	 * SUMMED IN JAVASCRIPT OVER BIGINTS, NOT IN SQL. `delta` is TEXT because
+	 * an 18-decimal amount does not fit SQLite's 64-bit INTEGER, and SQLite's
+	 * CAST CLAMPS INSTEAD OF ERRORING: `CAST('9300000000000000000' AS
+	 * INTEGER)` and `CAST('9500000000000000000' AS INTEGER)` are both
+	 * 9223372036854775807 and compare EQUAL. A `SUM(delta)` here would coerce
+	 * to a float and round the venue's own solvency figure. This project has
+	 * already been bitten by exactly that in the order book's depth
+	 * aggregation (see venue.ts) — about 9.2 ETH in wei is where it starts,
+	 * which is one ordinary price level.
+	 */
+	liabilityBreakdown(symbol: string): LiabilityBreakdown {
 		const rows = this.db
 			.prepare(
-				`SELECT delta FROM ledger_posting
+				`SELECT kind, delta FROM ledger_posting
 				  WHERE kind IN (?, ?, ?) AND (asset = ? OR asset LIKE ?)`,
 			)
 			.all(
@@ -490,10 +539,62 @@ export class Ledger {
 				AccountKind.INFLIGHT,
 				symbol,
 				`${symbol}.%`,
-			) as { delta: string }[];
-		let sum = 0n;
-		for (const r of rows) sum += BigInt(r.delta);
-		return sum;
+			) as { kind: string; delta: string }[];
+		let user = 0n;
+		let fees = 0n;
+		let inflight = 0n;
+		for (const r of rows) {
+			const d = BigInt(r.delta);
+			if (r.kind === AccountKind.USER) user += d;
+			else if (r.kind === AccountKind.FEES) fees += d;
+			else inflight += d;
+		}
+		return { user, fees, inflight, total: user + fees + inflight };
+	}
+
+	/** Total liability for a settlement asset: users + fees + in-flight. */
+	liabilities(symbol: string): bigint {
+		return this.liabilityBreakdown(symbol).total;
+	}
+
+	/**
+	 * Every customer's balance in a settlement asset, INCLUDING THE ZEROES.
+	 *
+	 * NOT `balances()`, and the difference is load-bearing twice over:
+	 *
+	 *   1. `balances()` matches the asset column EXACTLY and returns every
+	 *      kind keyed by account id — custody, fees and external included. A
+	 *      caller that wanted "what do customers hold" and reached for it
+	 *      would get the venue's own accounts mixed in with the customers'.
+	 *      This filters to USER and groups by SETTLEMENT asset, which is the
+	 *      level at which a customer's USDT is one balance rather than three.
+	 *
+	 *   2. `balances()` deletes zero entries. For a customer-facing view that
+	 *      is right; for an operator drill-down it hides the finding. An
+	 *      account at zero that still has funds reserved against resting
+	 *      orders is an overcommitted account, and dropping the row is exactly
+	 *      how that stays invisible. An empty rail must read as empty, not as
+	 *      absent.
+	 *
+	 * Summed in JavaScript over bigints for the reason spelt out on
+	 * `liabilityBreakdown` above: a SQL SUM over this TEXT column clamps at
+	 * int64 without saying so.
+	 */
+	userBalances(symbol: string): Map<string, bigint> {
+		const rows = this.db
+			.prepare(
+				`SELECT owner, delta FROM ledger_posting
+				  WHERE kind = ? AND (asset = ? OR asset LIKE ?)`,
+			)
+			.all(AccountKind.USER, symbol, `${symbol}.%`) as {
+			owner: string;
+			delta: string;
+		}[];
+		const out = new Map<string, bigint>();
+		for (const r of rows) {
+			out.set(r.owner, (out.get(r.owner) ?? 0n) + BigInt(r.delta));
+		}
+		return out;
 	}
 
 	byIdempotencyKey(key: string): LedgerTx | undefined {

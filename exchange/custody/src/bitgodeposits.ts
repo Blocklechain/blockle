@@ -344,7 +344,36 @@ export const CONFIRMATIONS: Readonly<Record<string, number>> = {
 	TRX: 20,
 	XRP: 1, // consensus is final, not probabilistic
 	DOGE: 20,
-	BNB: 20,
+	/*
+	 * BNB RAISED FROM 20 TO 40, AND THIS IS A JUDGEMENT CALL RATHER THAN A
+	 * MEASUREMENT — SAID OUT LOUD SO IT CAN BE ARGUED WITH ON THE RIGHT TERMS.
+	 *
+	 * BEP-126 fast finality is about two blocks in theory. The extra margin is
+	 * bought because this is the chain whose only free endpoint demonstrably
+	 * under-reports its own history (it answers eth_getLogs with HTTP 200 and an
+	 * empty array for pruned ranges rather than erroring), and 40 blocks at
+	 * 0.75s costs about thirty seconds of customer-visible latency. Thirty
+	 * seconds is not a product problem; crediting on a lie is.
+	 *
+	 * The right way to disagree with this number is reorg-depth data, not a
+	 * deadline.
+	 */
+	BNB: 40,
+	/*
+	 * POLYGON, NEW. 128 blocks — about 4.3 minutes at a 2s block.
+	 *
+	 * Not 32, which is the figure the Ethereum habit suggests: Polygon has had
+	 * multi-block reorgs well past 64, and 128 FAST blocks is cheap in
+	 * wall-clock terms precisely because the blocks are fast. Heimdall finality
+	 * via the `finalized` tag is preferred where the endpoint serves it, with
+	 * this count as a hard floor — see EVM_CHAIN_RULES in evmscan.ts, which is
+	 * the table the self-custodied scanner reads.
+	 *
+	 * POL is NOT a listed asset on this venue. The number is here because the
+	 * confirmation rule belongs with the other confirmation rules, not because a
+	 * market exists; listing POL would be a separate, deliberate edit.
+	 */
+	POL: 128,
 	USDT: 32, // governed by the chain it arrives on; see confirmationsFor
 	USDC: 32,
 	BLOCK: 10,

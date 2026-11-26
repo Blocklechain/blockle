@@ -59,12 +59,21 @@ import { Deposits, describeDeposit, listDepositAddresses } from "./deposits";
 import { BitGoDeposits } from "./bitgodeposits";
 import { BitGoHoldings } from "./bitgo";
 import { BlockAddressPool } from "./blockaddresspool";
+import { SolAddressPool } from "./soladdresspool";
+import { SolConsolidation } from "./solconsolidation";
+import {
+	assertSolRailBlockedUnlessProven,
+	assertSolRailUsesPool,
+	solRailFromEnv,
+	solRailReadiness,
+} from "./solrail";
 import { Customers } from "./customers";
 import { bumpDeclared, readDeclared } from "./declaredtreasury";
 import { depositsFor } from "./depositwatcher";
 import { nodeAdapters, nodeDepositAddress } from "./custodyrouting";
-import { ApiKeyError, ApiKeys, SCOPES, SIGNING_ALGORITHM, SKEW_MS, type Scope } from "./apikeys";
+import { ApiKeyError, ApiKeys, KEY_RATE_WINDOW_MS, SCOPES, SIGNING_ALGORITHM, SKEW_MS, type Scope } from "./apikeys";
 import { Listings, QUESTIONS, sendmailMailer } from "./listings";
+import { REST_MOUNT, matchRest, restIndex } from "./restapi";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { UserTotp, TwoFactorError } from "./usertotp";
 import { canPay } from "./liquidity";
@@ -95,6 +104,7 @@ import {
 	type CommitmentSource,
 	type HaltSource,
 } from "./liquidity";
+import { reconcilerStateFrom } from "./treasury";
 
 const PORT = Number(process.env.PUBLIC_API_PORT ?? 3100);
 const HOST = process.env.PUBLIC_API_HOST ?? "127.0.0.1";
@@ -246,18 +256,177 @@ function haltsFrom(): HaltSource {
 	}
 }
 
-function json(res: ServerResponse, code: number, body: unknown, maxAge = 2): void {
-	const s = JSON.stringify(body);
-	res.writeHead(code, {
+/*
+ * WHO MAY READ THIS RESPONSE FROM ANOTHER ORIGIN.
+ *
+ * `world` sends `Access-Control-Allow-Origin: *`; `same-origin` sends no
+ * Access-Control header at all. The parameter exists because this helper used
+ * to send `*` UNCONDITIONALLY — on /v1 payloads, and on /v1 401s, which means
+ * it was advertising customer balances as world-readable.
+ *
+ * WHAT THAT HEADER DID AND DID NOT PROTECT — CORRECTED.
+ *
+ * An earlier version of this comment claimed the blanket `*` was harmless
+ * because a cross-origin browser request "could not attach a cookie ... each of
+ * those needs a preflight". That reasoning is WRONG and it should not be
+ * trusted by the next reader. A SIMPLE request needs no preflight at all: a
+ * hostile page can
+ *
+ *     fetch("https://exchange.blockle.org/v1/orders", {
+ *       method: "POST", credentials: "include",
+ *       headers: { "Content-Type": "text/plain" }, body: "{...}" })
+ *
+ * and the browser sends it WITH the session cookie. CORS only stops the page
+ * from READING the reply; the order would already have been placed. So the
+ * missing ACAO header protects a read and protects nothing about a write.
+ *
+ * What actually stopped that write was never in this file: the accounts
+ * service sets its session cookie SameSite=Lax (services/accounts/src/http.js,
+ * `setCookie` default, used for SESSION_COOKIE in server.js), and Lax omits the
+ * cookie from a cross-site POST. That is a real control, but it lived in a
+ * different service, was named nowhere here, and no test pinned it — so adding
+ * a second spelling of a mutating route (/rest/orders) rested on an attribute
+ * this repo does not own.
+ *
+ * It no longer does: `crossSiteWrite()` below refuses any mutating request
+ * whose Origin names a different site than its Host, in THIS process, for every
+ * mount. The CORS labelling here is still correct and still worth keeping —
+ * authenticated responses say nothing about cross-origin access and nothing
+ * answers OPTIONS — but it is the read half of the problem, not the whole of it.
+ */
+export type Readers = "world" | "same-origin";
+
+/**
+ * HOW LONG A THROTTLED CALLER SHOULD WAIT, IN SECONDS.
+ *
+ * Derived from the per-key window in apikeys.ts rather than typed again here:
+ * the limit is "N requests in a rolling 60s window", so the longest a caller
+ * can need to wait for capacity is that window. Publishing a number that is not
+ * the enforced one teaches a client to retry too early, which is how a
+ * rate-limited client becomes a rate-limiting loop.
+ */
+export const RETRY_AFTER_SECONDS = Math.ceil(KEY_RATE_WINDOW_MS / 1000);
+
+/**
+ * THE HEADER SET FOR EVERY JSON RESPONSE THIS PROCESS WRITES.
+ *
+ * Split out of `jsonResponse` for one reason: it is the only way to TEST the
+ * promises the /rest index publishes. The index says "rate limiting answers 429
+ * with Retry-After, never 503" and "authenticated responses carry no
+ * Access-Control header"; both are properties of this function, and both now
+ * have a test (test/restapi.test.ts) that calls it directly.
+ *
+ * RETRY-AFTER IS ADDED BY CODE, NOT BY THE CALLER, AND THAT IS THE FIX.
+ *
+ * Before this, Retry-After was promised three times in restapi.ts and sent
+ * nowhere: the helper wrote a fixed five-header set and every 429 in the
+ * process — the per-key limit in apikeys.ts and the per-IP listing limit in
+ * listings.ts — went out bare. A client built against the published contract
+ * had nothing to honour, and a client that backs off only when told to backed
+ * off not at all. Doing it here rather than at each call site means the next
+ * 429 added to this service carries it without anybody remembering to, which is
+ * the only version of this that stays true.
+ *
+ * A caller may still override it (`extra`) if it ever knows a better number;
+ * the window length is the ceiling, not a guess.
+ */
+export function responseHeaders(
+	code: number,
+	bytes: number,
+	maxAge: number,
+	readers: Readers,
+	extra: Readonly<Record<string, string>> = {},
+): Record<string, string> {
+	return {
 		"Content-Type": "application/json; charset=utf-8",
-		"Content-Length": Buffer.byteLength(s),
+		"Content-Length": String(bytes),
 		"Cache-Control": `public, max-age=${maxAge}`,
 		"X-Content-Type-Options": "nosniff",
-		// Same-origin once the exchange owns the root; explicit for the interim
-		// where the front page may be served from a different host.
-		"Access-Control-Allow-Origin": "*",
-	});
+		// Public market data is world-readable by design — publishing what the
+		// venue holds without making anyone sign up first is the whole point of
+		// the /public surface, and a page on another origin must be able to read
+		// it. Account-scoped responses pass "same-origin" and get no such header.
+		//
+		// NOTE THAT THIS APPLIES TO A 429 TOO, on a world-readable route: a
+		// cross-origin reader of /rest/markets that gets a throttle with no ACAO
+		// sees an opaque network error, so it cannot tell "slow down" from "that
+		// host is gone" and retries into the limit.
+		...(readers === "world" ? { "Access-Control-Allow-Origin": "*" } : {}),
+		...(code === 429 ? { "Retry-After": String(RETRY_AFTER_SECONDS) } : {}),
+		...extra,
+	};
+}
+
+function jsonResponse(
+	res: ServerResponse,
+	code: number,
+	body: unknown,
+	maxAge = 2,
+	readers: Readers = "world",
+	extra: Readonly<Record<string, string>> = {},
+): void {
+	const s = JSON.stringify(body);
+	res.writeHead(code, responseHeaders(code, Buffer.byteLength(s), maxAge, readers, extra));
 	res.end(s);
+}
+
+/**
+ * Is this a mutating request from a DIFFERENT SITE than the one it is addressed
+ * to? If so it is refused, and that is this service's own CSRF control.
+ *
+ * WHY THIS EXISTS. Every mutating route here is authenticated by a cookie the
+ * browser attaches automatically. CORS does not stop a cross-site POST — a
+ * simple request (text/plain, no custom headers) is sent without a preflight
+ * and the reply is merely unreadable, so the side effect happens anyway. Until
+ * this function, the only thing standing between a hostile page and
+ * `POST /v1/orders` with a victim's session was the SameSite=Lax attribute set
+ * by a different service in a different directory.
+ *
+ * THE RULE, and why it does not break anything:
+ *   * No Origin header -> ALLOWED. Non-browser callers (the Flutter app, curl,
+ *     an API-key integration, the payout runner) send none, and CSRF is not a
+ *     thing that happens to them.
+ *   * Origin host == Host header host -> ALLOWED. That is the site's own page;
+ *     the front page, the sign-in page and the operator console are all served
+ *     from the host they post to, and nginx passes `Host $host` through.
+ *   * Anything else, including the literal "null" a sandboxed frame sends ->
+ *     REFUSED with 403.
+ *
+ * Deliberately keyed on the HOST HEADER and not on a configured hostname:
+ * exchange.blockle.org and admin.blockle.org both proxy to this process, and a
+ * hard-coded name would have broken one of them or needed a list to rot.
+ */
+export function crossSiteWrite(
+	method: string | undefined,
+	origin: string | undefined,
+	host: string | undefined,
+): boolean {
+	const m = (method ?? "GET").toUpperCase();
+	if (m === "GET" || m === "HEAD" || m === "OPTIONS") return false;
+	if (origin === undefined || origin.trim() === "") return false;
+	if (host === undefined || host.trim() === "") return true;
+	let originHost: string;
+	try {
+		// `new URL("null")` throws, which is the answer we want for a sandboxed
+		// frame: it is not this site, so it may not write here.
+		originHost = new URL(origin.trim()).host.toLowerCase();
+	} catch {
+		return true;
+	}
+	return originHost !== host.trim().toLowerCase();
+}
+
+/**
+ * THE PUBLIC FORM. Market data, the /rest index, and the static-path 404s.
+ *
+ * Kept as the bare name `json` so the ~thirty existing public call sites did
+ * not have to be touched to add the distinction — but note that `venueRoute`
+ * SHADOWS this name with the account-scoped form, on purpose. See the comment
+ * there: inside that function the safe variant has to be the one you get by
+ * default, because that is where a route added next year will be written.
+ */
+function json(res: ServerResponse, code: number, body: unknown, maxAge = 2): void {
+	jsonResponse(res, code, body, maxAge, "world");
 }
 
 const MIME: Record<string, string> = {
@@ -517,8 +686,45 @@ async function venueRoute(
 		| ((asset: string, network: string | undefined) =>
 			{ ok: true } | { ok: false; reason: string })
 		| undefined,
+	/**
+	 * THE MOUNT THIS REQUEST ARRIVED ON — "/v1", or "/rest" for the documented
+	 * alias (restapi.ts). Only its LENGTH is used, to find the route tail.
+	 *
+	 * Why a mount and not a rewritten URL. An API-key signature covers
+	 * `url.pathname + url.search` exactly as sent (apikeys.ts), so rewriting
+	 * /rest/balances to /v1/balances before authenticating would invalidate
+	 * every signature a client could possibly produce: the client signs what it
+	 * sends and the server verifies what it received. Rewriting the URL here
+	 * would have made every key-authenticated /rest call a 401 with a message
+	 * about a bad signature — a failure that looks like a client bug and is not
+	 * one. So the URL object is untouched and only the prefix length varies.
+	 */
+	mount: "/v1" | "/rest" = "/v1",
 ): Promise<void> {
-	const p = url.pathname.slice("/v1".length);
+	const p = url.pathname.slice(mount.length);
+
+	/*
+	 * EVERY RESPONSE FROM THIS FUNCTION IS ACCOUNT-SCOPED, SO NONE OF THEM
+	 * CARRIES A CORS HEADER — AND `json` IS SHADOWED HERE TO MAKE THAT THE
+	 * DEFAULT RATHER THAN A THING TO REMEMBER.
+	 *
+	 * Deliberately the same name as the module-level helper. A route added to
+	 * this 800-line function tomorrow will write `json(res, 200, …)` without
+	 * thinking about it, and it must get the variant that does NOT advertise a
+	 * customer's balances as world-readable. Naming it something else would
+	 * mean the safe call needed to be chosen, and the unsafe one would be one
+	 * autocompletion away.
+	 *
+	 * This covers the catch block at the bottom too, which matters: a 401 body
+	 * marked `Access-Control-Allow-Origin: *` is how a cross-origin probe
+	 * learns an endpoint exists and what it is called.
+	 */
+	const json = (
+		r: ServerResponse,
+		code: number,
+		b: unknown,
+		maxAge = 2,
+	): void => jsonResponse(r, code, b, maxAge, "same-origin");
 
 	/*
 	 * IDENTITY IS THE BLOCKLE ACCOUNT, NOT A VENUE ACCOUNT.
@@ -1285,7 +1491,16 @@ async function venueRoute(
 			return;
 		}
 
-		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
+		/*
+		 * `[^/]+`, NOT `[A-Za-z0-9_]+` — same shape-vs-value rule as /book and
+		 * /trades. The /rest catalogue matches `{id}` as one whole segment, so a
+		 * stricter pattern here leaves a band of ids that the published route
+		 * accepts and no handler claims, which answered a flat 404 "not found"
+		 * instead of the documented refusal. `cancelOrder` looks the id up with
+		 * a bound parameter and answers 404 "no such order" for anything it does
+		 * not hold, which is both safe and the right error.
+		 */
+		const cancel = /^\/orders\/([^/]+)\/cancel$/.exec(p);
 		if (cancel !== null && req.method === "POST") {
 			const who = await caller("trade");
 			json(res, 200, { state: venue.cancelOrder(who, cancel[1]!).state }, 0);
@@ -1568,6 +1783,78 @@ export function start(): void {
 			);
 		}
 	}
+
+	/*
+	 * SOL IS IN BLOCK'S POSITION AND GETS THE SAME SHAPE — plus the gate BLOCK
+	 * does not need.
+	 *
+	 * ed25519 under SLIP-0010 derives children from the private key and refuses
+	 * non-hardened segments outright, so there is no watch-only derivation and
+	 * this process can only ever hand out addresses someone else derived. Hence
+	 * a pool, loaded by solpoolcli.ts from a batch made on the signer host.
+	 *
+	 * THE DIFFERENCE FROM BLOCK, AND WHY THE ASSERTIONS BELOW ARE NOT CEREMONY:
+	 * Solana is account-per-address, so a deposit cannot be sent back out until
+	 * a sweep is composed, signed off-host, and broadcast — none of which exists
+	 * yet. A loaded pool would nevertheless be able to issue addresses
+	 * immediately, which is the one-way door rule 4 forbids. So the rail checks
+	 * its own preconditions and refuses, and the service refuses to START if
+	 * settlement.ts has stopped saying the rail is shut while it still is.
+	 *
+	 * The pool status line is printed FROM THE RAIL, not from the pool object
+	 * this function holds. That is the BLOCK bug's actual lesson: the old log
+	 * read "block pool: 999 free of 1000" from publicapi's own reference while
+	 * the deposit route had no pool at all, so the log proved nothing. Here the
+	 * object that would issue is the object that reports, and
+	 * assertSolRailUsesPool checks they are the same object rather than merely
+	 * agreeing numbers — two pools over one database file always agree.
+	 */
+	const solPool = new SolAddressPool(wdb);
+	const solHotAddress = (process.env.CHAIN_SOL_HOT_ADDRESS ?? "").trim();
+	/*
+	 * NO HOT ADDRESS MEANS NO SWEEPER, AND THAT IS A STATE, NOT A CRASH.
+	 *
+	 * The sweeper needs a destination to compose a proposal at all, and there
+	 * is deliberately no default: a placeholder is a real curve point nobody
+	 * controls, and the pool's own first address is worse — the planner refuses
+	 * a hot address that is in the pool, because sweeping into a customer's
+	 * deposit address credits the venue's whole balance to that customer. So
+	 * with nothing configured the rail is simply not built, the readiness check
+	 * is asked directly, and the startup assertion still runs. That assertion
+	 * running on EVERY boot, configured or not, is the point of it.
+	 */
+	const solRail =
+		solHotAddress === ""
+			? undefined
+			: solRailFromEnv({
+					env: process.env,
+					pool: solPool,
+					consolidation: new SolConsolidation(wdb, solPool, {
+						hotAddress: solHotAddress,
+					}),
+				});
+	if (solRail !== undefined) assertSolRailUsesPool(solRail, solPool);
+	{
+		const s = solPool.status();
+		const readiness =
+			solRail?.readiness() ??
+			solRailReadiness({
+				poolStatus: { total: s.total, free: s.free },
+				endpointUrl: process.env.CHAIN_SOL_URL ?? "",
+				hotAddress: "",
+			});
+		assertSolRailBlockedUnlessProven(readiness);
+		if (solRail !== undefined) {
+			for (const note of solRail.notes()) console.log(`  sol: ${note}`);
+		} else if (s.total > 0) {
+			// A loaded pool with no sweeper is the exact shape of the one-way
+			// door, so it is said out loud rather than left in the status file.
+			console.log(
+				`  sol: ${s.free} of ${s.total} pool addresses free, and NO sweeper is ` +
+					"configured (CHAIN_SOL_HOT_ADDRESS unset) — deposits stay shut",
+			);
+		}
+	}
 	if (nodeChains.size > 0) {
 		console.log(`  nodes:  ${[...nodeChains.keys()].join(", ")}`);
 	}
@@ -1727,6 +2014,29 @@ export function start(): void {
 		customers,
 		totpSecrets: totpSecretsFrom(process.env.EXCHANGE_ADMIN_TOTP),
 		houseAccountId: process.env.EXCHANGE_HOUSE_ACCOUNT ?? "house",
+		/*
+		 * THE TREASURY VIEW'S TWO EXTRA INPUTS.
+		 *
+		 * `reservations` is the live Venue, passed as the one-method
+		 * ReservationSource interface rather than as the Venue itself: the
+		 * admin surface needs to read what resting orders have claimed, and
+		 * must not thereby gain the ability to place or cancel one.
+		 *
+		 * SAME LEDGER, SAME FILE, SO THE SAME NUMBERS. `wledger` above and the
+		 * venue here are both built on `wdb`, and the read-only public handle
+		 * is the same DB_PATH — so the treasury panel, the trading engine and
+		 * the reconcile job's own read-only handle all see one database.
+		 * Handing the admin surface a different connection would have been the
+		 * easy way to make the console disagree with the reconciler for a
+		 * reason nobody could find.
+		 *
+		 * `reconcilerState` is a FUNCTION so the halt file is re-read on every
+		 * request. The job rewrites it every two minutes; a value captured here
+		 * would freeze the panel's "last reconciled" at process start and keep
+		 * rendering it as though it were current.
+		 */
+		reservations: venue,
+		reconcilerState: () => reconcilerStateFrom(),
 	};
 
 	/*
@@ -1800,6 +2110,55 @@ export function start(): void {
 			try {
 				const url = new URL(req.url ?? "/", `http://${HOST}`);
 
+				/*
+				 * CSRF: REFUSE A MUTATING REQUEST THAT CAME FROM ANOTHER SITE.
+				 *
+				 * FIRST, BEFORE EVERY SURFACE, INCLUDING /admin. The admin
+				 * console authenticates with the same kind of session cookie a
+				 * browser attaches automatically, so it is as exposed to a
+				 * cross-site POST as /v1 is; putting the gate after adminRoute
+				 * would have protected the customer surface and left the
+				 * operator surface out.
+				 *
+				 * This call is the whole point of `crossSiteWrite`, and until
+				 * now it was missing: the function existed, the comment above it
+				 * claimed it "refuses any mutating request whose Origin names a
+				 * different site", and nothing in the process ever called it —
+				 * so the only thing standing between a hostile page and a
+				 * cookie-authenticated POST was the accounts service's
+				 * SameSite=Lax attribute, set in a different service, named
+				 * nowhere here and pinned by no test. A control that is only
+				 * described is not a control. test/restapi.test.ts now asserts
+				 * both that the function refuses the right requests and that
+				 * this file calls it before it routes anything.
+				 *
+				 * 403 and no CORS header: a cross-origin caller learns nothing
+				 * from the body, which is correct, because the legitimate
+				 * callers (same-origin pages, and non-browser clients that send
+				 * no Origin at all) never see this path.
+				 */
+				if (
+					crossSiteWrite(
+						req.method,
+						header(req, "origin"),
+						header(req, "host"),
+					)
+				) {
+					jsonResponse(
+						res,
+						403,
+						{
+							error:
+								"cross-site writes are refused. Call this API from its " +
+								"own origin, or from a server-to-server client that " +
+								"sends no Origin header.",
+						},
+						0,
+						"same-origin",
+					);
+					return;
+				}
+
 				if (await adminRoute(req, res, url, adminDeps)) return;
 
 				// TRADING LIVES UNDER /v1 AND IS THE ONLY MUTABLE SURFACE.
@@ -1812,8 +2171,107 @@ export function start(): void {
 						apiKeys,
 						userTotp,
 						gasReadyFor,
+						"/v1",
 					);
 					return;
+				}
+
+				/*
+				 * ---- /rest : THE DOCUMENTED ALIAS ------------------------------
+				 *
+				 * Routed BEFORE the read-only method gate below, because two of
+				 * its routes are the POST trading routes. Everything about why
+				 * this is an alias and not a third implementation is in
+				 * restapi.ts; what happens here is only dispatch:
+				 *
+				 *   * /rest itself serves the index — the whole catalogue, with
+				 *     auth, parameters and a real example per route.
+				 *   * an `account` route goes to the SAME venueRoute, with the
+				 *     mount set to "/rest" so the route tail resolves. The URL is
+				 *     not rewritten (API-key signatures cover the path as sent).
+				 *   * a `public` route falls through to the public read block
+				 *     below with `p` already resolved, so it is literally the same
+				 *     handler the /public URL reaches.
+				 *   * ANYTHING NOT IN THE CATALOGUE IS 404 HERE. That is the
+				 *     enforcement point for "/rest cannot move funds or touch a
+				 *     credential": the withdrawal, allowlist, 2FA and key-
+				 *     management routes are not aliased, so /rest/withdrawals
+				 *     never reaches a handler at all — it is not "reachable if you
+				 *     guess the spelling".
+				 *
+				 * OPTIONS IS REFUSED, NOT ANSWERED, and that is the deliberate
+				 * CORS decision rather than an omission. Answering a preflight
+				 * here is what would turn the `Access-Control-Allow-Origin: *` on
+				 * public market data into a cross-origin credentialed read of the
+				 * account routes; same-origin browser calls need no preflight and
+				 * server-to-server callers are not subject to CORS at all.
+				 */
+				let restPublicPath: string | undefined;
+				if (
+					url.pathname === REST_MOUNT ||
+					url.pathname.startsWith(`${REST_MOUNT}/`)
+				) {
+					const m = matchRest(url.pathname, req.method ?? "GET");
+					if (m.kind === "index") {
+						// The index is a document about what exists, not live
+						// state, so it may be cached — but briefly, because a
+						// deploy changes it and a stale route list is the one
+						// thing a self-describing index must not serve.
+						json(res, 200, restIndex(), 60);
+						return;
+					}
+					if (m.kind === "method") {
+						// An Allow header, because "405" without one leaves a
+						// caller guessing which verb the path wanted. Written
+						// directly rather than through json() since that helper
+						// does not carry extra headers.
+						const b = JSON.stringify({
+							error:
+								`that path exists but does not accept ${req.method}. ` +
+								`Allowed: ${m.allow.join(", ")}. See ${REST_MOUNT} for ` +
+								"the full route list.",
+						});
+						res.writeHead(405, {
+							"Content-Type": "application/json; charset=utf-8",
+							"Content-Length": Buffer.byteLength(b),
+							"Cache-Control": "no-store",
+							"X-Content-Type-Options": "nosniff",
+							Allow: m.allow.join(", "),
+						});
+						res.end(b);
+						return;
+					}
+					if (m.kind === "unknown") {
+						/*
+						 * NAME THE INDEX IN THE 404.
+						 *
+						 * A bare {"error":"not found"} on a documented API is a
+						 * dead end: the caller cannot tell a typo from a route
+						 * that was never aliased. Note what is NOT said — whether
+						 * the spelling exists on another mount. A money route
+						 * answering "that exists at /v1" would be confirming the
+						 * route to someone probing for it; the index already lists
+						 * every exclusion with its reason, for callers rather than
+						 * for probes.
+						 */
+						json(res, 404, {
+							error: "no such route on this API",
+							index: REST_MOUNT,
+						}, 0);
+						return;
+					}
+					if (m.route.surface === "account") {
+						await venueRoute(
+							req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
+							LIVE_FEES, pricing, mm, deposits, wdb, provisionAddress,
+							apiKeys,
+							userTotp,
+							gasReadyFor,
+							REST_MOUNT,
+						);
+						return;
+					}
+					restPublicPath = m.tail;
 				}
 
 				// ONE MUTATING PUBLIC ROUTE, and it is deliberately outside the
@@ -1860,7 +2318,25 @@ export function start(): void {
 					json(res, 405, { error: "this API is read-only" });
 					return;
 				}
-				const p = url.pathname.replace(/^\/public/, "") || "/";
+				/*
+				 * ONE HANDLER, THREE SPELLINGS — and the prefix strip is
+				 * SEGMENT-ANCHORED.
+				 *
+				 * The public read routes answer at /public/x, at bare /x (the
+				 * front page's own fetches), and now at /rest/x for the
+				 * documented alias. `restPublicPath` is set above only after the
+				 * /rest catalogue matched, so an unaliased spelling cannot arrive
+				 * here by this door.
+				 *
+				 * The regex gained `(?=\/|$)`. Without it the strip was a plain
+				 * prefix replace, so a future top-level route whose name merely
+				 * STARTED with "public" — /publication, say — would silently have
+				 * been rewritten to /ation and 404'd with nothing in the log to
+				 * explain it. No such route exists today; the anchor is here so
+				 * none can be added into the trap.
+				 */
+				const p =
+					restPublicPath ?? (url.pathname.replace(/^\/public(?=\/|$)/, "") || "/");
 
 				if (p === "/status") {
 					const g = gate();
@@ -1948,8 +2424,29 @@ export function start(): void {
 					return;
 				}
 
-				// Public order book and trade tape — no account needed to look.
-				const bookMatch = /^\/book\/([A-Z0-9-]+)$/.exec(p);
+				/*
+				 * Public order book and trade tape — no account needed to look.
+				 *
+				 * THE CAPTURE IS `[^/]+`, NOT `[A-Z0-9-]+`, AND THAT IS A FIX.
+				 *
+				 * The /rest catalogue matches a path's SHAPE (`{market}` ->
+				 * `([^/]+)`) and leaves validating the VALUE to the handler, on
+				 * purpose: two copies of a validator drift. But these two
+				 * handlers held a SECOND, STRICTER pattern, so there was a band
+				 * of paths the catalogue accepted and no handler claimed —
+				 * anything with a lower-case letter. `/public/book/btc-usdt`
+				 * therefore fell past every route, through serveStatic, and out
+				 * of the generic tail as `{"error":"not found"}` — or, to a
+				 * browser, as 6 KB of 404.html from a JSON endpoint — while the
+				 * published index promised `{"error":"unknown market"}`.
+				 *
+				 * Now the handler claims every shape the catalogue accepts and
+				 * answers the documented error for a symbol it does not know.
+				 * Symbols stay EXACT (upper case, as /markets spells them): a
+				 * case-insensitive lookup would be a second spelling for every
+				 * market, which is the one thing this alias design refuses.
+				 */
+				const bookMatch = /^\/book\/([^/]+)$/.exec(p);
 				if (bookMatch !== null) {
 					const sym = bookMatch[1]!;
 					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
@@ -1964,7 +2461,8 @@ export function start(): void {
 					});
 					return;
 				}
-				const tradeMatch = /^\/trades\/([A-Z0-9-]+)$/.exec(p);
+				// Same shape-vs-value split as /book above, same reason.
+				const tradeMatch = /^\/trades\/([^/]+)$/.exec(p);
 				if (tradeMatch !== null) {
 					const sym = tradeMatch[1]!;
 					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
@@ -2098,6 +2596,40 @@ export function start(): void {
 
 				if (p === "/health") {
 					json(res, 200, { ok: true });
+					return;
+				}
+
+				/*
+				 * A /rest PATH NEVER FALLS INTO THE STATIC SITE.
+				 *
+				 * Reaching here with `restPublicPath` set means the catalogue
+				 * matched and no handler answered — i.e. the catalogue and the
+				 * handlers disagree. Two ways that happens: a path parameter
+				 * whose value no handler recognises, and a /public handler that
+				 * was renamed while its /rest entry stayed behind. Without this
+				 * block the request continued into serveStatic and the HTML 404
+				 * page, so a JSON API answered `text/html` and 6 KB of marketing
+				 * copy, and the index went on publishing an example response for
+				 * a route that no longer existed.
+				 *
+				 * JSON, 404, and a pointer at the index. The log line names the
+				 * tail — which is market data, never an account or a customer —
+				 * because this state is a server-side defect worth finding in
+				 * the log rather than only in a client's bug report.
+				 */
+				if (restPublicPath !== undefined) {
+					console.warn(
+						`/rest catalogue matched ${restPublicPath} but no handler ` +
+							`answered it — catalogue and handlers disagree`,
+					);
+					json(res, 404, {
+						error: "not found",
+						detail:
+							"that path is published but the value in it was not " +
+							"recognised. Check the identifier against the route's " +
+							"listing in the index.",
+						index: REST_MOUNT,
+					}, 0);
 					return;
 				}
 

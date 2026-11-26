@@ -2,14 +2,23 @@
   BLOCKLE EXCHANGE — OPERATOR CONSOLE
   ===================================
 
-  Four questions, in the order an operator asks them:
+  Five questions, in the order an operator asks them:
 
-    1. How much have we made?        — per asset, exact, plus one estimated total
-    2. Can we still pay gas?         — runway in WITHDRAWALS, not in coins
-    3. Is any chain losing money?    — fee versus gas cost, with the arithmetic
-    4. What has been done here?      — the append-only action journal
+    1. Is the venue solvent?         — custody minus books, per asset, exact
+    2. How much have we made?        — per asset, exact, plus one estimated total
+    3. Can we still pay gas?         — runway in WITHDRAWALS, not in coins
+    4. Is any chain losing money?    — fee versus gas cost, with the arithmetic
+    5. What has been done here?      — the append-only action journal
 
-  THREE RULES THIS PAGE FOLLOWS.
+  QUESTION 1 IS FIRST, OPEN BY DEFAULT, AND HAS THE BIGGEST NUMBER ON THE PAGE.
+  Every other panel here answers a business question. Only this one can say the
+  venue cannot honour its obligations, and a figure that can say that has to be
+  the figure someone sees without scrolling or clicking. It is also the only
+  panel whose numbers an operator must be able to trust against a second
+  source: they are the reconciler's own, from the same functions the
+  every-two-minutes job runs, rather than a parallel query that could disagree.
+
+  FOUR RULES THIS PAGE FOLLOWS.
 
   * NUMBERS ARE RENDERED AS THE STRINGS THE API SENT. No parseFloat anywhere on
     this page. A USDT balance past ~9e15 base units does not survive a JavaScript
@@ -24,6 +33,13 @@
   * EVERY ACTION ASKS FOR A CODE. Sweeping revenue and funding a gas float each
     require a current authenticator code on the request itself — not a session
     that was 2FA'd an hour ago.
+
+  * NO FIAT FIGURE FOR BLOCK OR A BLOCK-20 TOKEN, including by conversion. The
+    treasury table renders every amount in the asset's OWN units and carries no
+    currency column at all — the API it reads returns no rate and no total, so
+    there is nothing on that path to convert with. (The Profit panel's combined
+    total is an estimate in USDT and is labelled as one; that is a different
+    payload and a pre-existing one.)
 
   Sign-in is the ordinary Blockle account session on .blockle.org; this page has
   no login form because it has no separate accounts. A session that is not on
@@ -185,6 +201,70 @@
   .pill.ok   { color: var(--up); }
   .pill.bad  { color: var(--down); }
   .pill.warn { color: var(--warn); }
+  /* "We did not check" is a third state and must not borrow either of the
+     other two's colours. A grey pill reads as an absence of information,
+     which is exactly what it is; a green one would read as a pass. */
+  .pill.dim  { color: var(--ink-faint); }
+
+  /* ------------------------------------------------- the solvency headline
+   *
+   * THE ONE NUMBER ON THIS PAGE THAT CAN SAY THE VENUE IS IN TROUBLE, so it
+   * gets its own block above everything else and a type size nothing else
+   * competes with. Per-asset detail is in the table below it; this is the
+   * answer, and the answer is a DIFFERENCE, not a balance — a large custody
+   * figure tells an operator nothing about whether it covers what is owed.
+   *
+   * Green here means "custody equals books, exactly". It deliberately does
+   * NOT mean "verified against a custodian": this page does not read one, and
+   * the sub-line under the figure says so every time rather than only when
+   * something is wrong. A green tick that quietly means "we did not look" is
+   * the failure mode this block is shaped to avoid.
+   */
+  .solvency {
+    border: 1px solid var(--line); background: var(--raise-2);
+    border-radius: 8px; padding: 18px 20px; margin-bottom: 14px;
+  }
+  .solvency.bad { border-color: var(--down); background: rgba(255, 92, 108, 0.09); }
+  .solvency .k {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .solvency .v {
+    font: 700 42px/1.05 var(--mono); margin-top: 10px;
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+  }
+  .solvency .v.good { color: var(--up); }
+  .solvency .v.bad  { color: var(--down); }
+  .solvency .sub { margin-top: 9px; font-size: 13px; color: var(--ink-dim); }
+  .solvency .meta {
+    margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line);
+    display: flex; gap: 8px 18px; flex-wrap: wrap;
+    font: 11.5px/1.5 var(--mono); color: var(--ink-faint);
+  }
+  .solvency ul { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-dim); }
+
+  /* A difference that is not zero is the cell to look at, in any row. */
+  td.diff { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.diff.bad { color: var(--down); font-weight: 700; }
+
+  /* --------------------------------------------------------- the drill-down
+   *
+   * A row of buttons rather than links: this toggles a nested table in place
+   * and changes no URL, so an <a href> would be a lie to a keyboard user and
+   * to anyone who middle-clicked it. The whole row is not clickable either —
+   * on the screen that shows every customer's balance, an accidental expand
+   * is noise, and a 44px named control is what a thumb can aim at.
+   */
+  button.drill {
+    background: none; color: var(--signal); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 8px; font: 600 11px var(--mono);
+    cursor: pointer; letter-spacing: 0.04em;
+  }
+  button.drill[aria-expanded="true"] { border-color: var(--signal); }
+  tr.holders > td { background: var(--ground); padding: 4px 10px 14px; }
+  tr.holders table { margin-top: 6px; }
+  tr.holders th { color: var(--ink-faint); }
+  tr.over td { background: rgba(245, 165, 36, 0.08); }
 
   form.act { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
   form.act label { display: block; font-size: 11px; color: var(--ink-faint); margin-bottom: 4px; }
@@ -243,6 +323,16 @@
     table { font-size: 12px; }
     th, td { padding: 9px 7px; }
     .out { font-size: 11.5px; }
+
+    /* The solvency figure stays the biggest thing on the screen, just not
+     * 42px wide on a 360px phone — a number that wraps mid-digit is a number
+     * nobody can read, and this is the one an operator opens the page for. */
+    .solvency { padding: 14px 13px; }
+    .solvency .v { font-size: 30px; }
+    /* The drill-down toggle is a real touch target, like every other control
+     * here, but NOT full width: it sits inside a table cell beside an asset
+     * name, and stretching it would push the figures off screen. */
+    button.drill { min-height: 36px; padding: 6px 10px; width: auto; }
   }
 
   @media (prefers-color-scheme: light) {
@@ -283,6 +373,49 @@
   </div>
 
   <div id="banner"></div>
+
+  <!-- ====================================================================
+       TREASURY. First on the page and open by default, because it is the
+       only panel that can report that the venue cannot honour what it owes.
+
+       The headline is a DIFFERENCE. `custody - owed` must be exactly zero;
+       anything else means some flow is posting its entries wrongly, and the
+       reconciler halts withdrawals on it. A big custody figure on its own
+       says nothing about solvency, which is why the big number here is the
+       subtraction and not a balance.
+
+       The reconciler's state sits in the same block rather than in a corner
+       somewhere: "the books add up" and "a custodian confirmed we hold it"
+       are two different claims, and this page can only make the first.
+       ==================================================================== -->
+  <details class="card" id="treasury-card" open>
+    <summary>Treasury <span class="note" id="treasury-note"></span></summary>
+    <div class="card-body">
+      <div class="solvency" id="solvency">
+        <div class="k">Custody minus books</div>
+        <div class="v" id="solvency-v">loading…</div>
+        <div class="sub" id="solvency-sub"></div>
+        <div class="meta" id="solvency-meta"></div>
+        <ul id="solvency-caveats"></ul>
+      </div>
+      <p class="lead">
+        Per asset: what the books say is held in custody, what is owed to
+        customers, the venue's own accrued fees, withdrawals already debited but
+        not yet confirmed on chain, and what resting orders have already claimed.
+        Every amount is in that asset's own units — there is no fiat column on
+        this table, for any asset. Expand a row to see every account's position
+        in it.
+      </p>
+      <div class="scroll"><table id="treasury">
+        <thead><tr>
+          <th>Asset</th><th>Custody</th><th>Owed to customers</th><th>Fees</th>
+          <th>In flight</th><th>Reserved</th><th>Difference</th>
+          <th>Holders</th><th>Reconciler</th>
+        </tr></thead>
+        <tbody><tr><td colspan="9">loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </details>
 
   <details class="card" open>
     <summary>Profit <span class="note" id="profit-note"></span></summary>

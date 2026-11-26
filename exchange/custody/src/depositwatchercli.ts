@@ -47,8 +47,21 @@ function listedAssets(nodeFeeds: ReadonlyMap<string, unknown>): string[] {
 		out.add(settlementAsset(m.base));
 		out.add(settlementAsset(m.quote));
 	}
+	/*
+	 * THE FEED MAP IS KEYED BY CUSTODY ID AND THIS QUESTION IS ABOUT AN ASSET,
+	 * so the keys are collapsed rather than looked up directly.
+	 *
+	 * `nodeFeeds.has(a)` was right while every key was a single-chain native
+	 * coin, where the custody id IS the settlement asset. It would silently
+	 * stop being right the day a feed is keyed `USDC.POLYGON`: the asset would
+	 * fail this test, be treated as having no node, and — if it is also in
+	 * SELF_CUSTODIED — be dropped from the poll list entirely. A configured
+	 * rail that the watcher never polls is the failure mode this whole file
+	 * exists to have fixed once already.
+	 */
+	const fed = new Set([...nodeFeeds.keys()].map((id) => settlementAsset(id)));
 	return [...out].filter(
-		(a) => ASSETS[a] !== undefined && (nodeFeeds.has(a) || !SELF_CUSTODIED.has(a)),
+		(a) => ASSETS[a] !== undefined && (fed.has(a) || !SELF_CUSTODIED.has(a)),
 	);
 }
 

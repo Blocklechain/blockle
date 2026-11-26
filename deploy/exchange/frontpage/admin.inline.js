@@ -266,6 +266,362 @@
     }
   }
 
+  /*
+   * ==========================================================================
+   * TREASURY
+   * ==========================================================================
+   *
+   * THE HEADLINE IS A DIFFERENCE, AND IT IS RENDERED FROM STRINGS.
+   *
+   * `custody - owed` must be exactly zero. The API sends it as a decimal
+   * STRING in the asset's own units plus a base-unit string beside it, and
+   * nothing here parses either. An 18-decimal balance does not survive a
+   * JavaScript double — 9.3 ETH and 9.5 ETH in wei are both past 2^63 and a
+   * `Number()` of them is neither — and this is the page that reports whether
+   * customer funds are missing. So: no parseFloat, no Number, no arithmetic.
+   * The only test applied to a figure is whether its base-unit string is
+   * literally "0", which is a string comparison and exact at any magnitude.
+   *
+   * GREEN DOES NOT MEAN VERIFIED, AND THE PAGE SAYS SO EVERY TIME.
+   *
+   * This endpoint reads the ledger, not a custodian. "The books add up" and "a
+   * custodian confirms we hold it" are two different claims and only the first
+   * is being made here — so the reconciler's own last verdict and the age of
+   * it are rendered in the same block as the figure, including when there is
+   * no verdict at all. A green tick that quietly means "we did not look" is
+   * the specific thing this layout exists to prevent: the venue's reconcile
+   * job filters its asset list down to assets with a non-zero position, so on
+   * a flat ledger it writes an EMPTY halt set and logs "reconciliation OK"
+   * having checked nothing.
+   *
+   * NO FIAT, FOR ANY ASSET. There is no currency anywhere in this payload and
+   * no rate source behind it, so there is nothing on this path to convert
+   * with. That is how the "never a USD price for BLOCK, including by
+   * conversion" rule is kept here — not by remembering to skip a column.
+   */
+
+  /** Exactly zero? A STRING test, because at 18 decimals a numeric one lies. */
+  function isZeroBase(s) {
+    return String(s) === "0";
+  }
+
+  /** "3 minutes ago", from an ISO timestamp, or null if we cannot say. */
+  function ageOf(iso) {
+    if (!iso) return null;
+    const then = Date.parse(iso);
+    if (!Number.isFinite(then)) return null;
+    const mins = Math.round((Date.now() - then) / 60000);
+    if (mins < 1) return "less than a minute ago";
+    if (mins === 1) return "1 minute ago";
+    if (mins < 90) return mins + " minutes ago";
+    const hours = Math.round(mins / 60);
+    return hours === 1 ? "1 hour ago" : hours + " hours ago";
+  }
+
+  function renderSolvency(r) {
+    const box = $("solvency");
+    const v = $("solvency-v");
+    const sub = $("solvency-sub");
+    const meta = $("solvency-meta");
+    const caveats = $("solvency-caveats");
+    v.textContent = "";
+    sub.textContent = "";
+    meta.textContent = "";
+    caveats.textContent = "";
+
+    const broken = (r.assets || []).filter((a) => !a.balanced);
+    box.className = "solvency" + (broken.length ? " bad" : "");
+
+    if (broken.length === 0) {
+      v.className = "v good";
+      // A literal zero, not "OK". The number is the claim; a word would be an
+      // interpretation of it, and an operator comparing this screen against
+      // the reconcile log needs to see the same figure in both places.
+      v.appendChild(txt("0"));
+      sub.appendChild(txt(
+        "Every asset's custody equals what the books say is owed, exactly. " +
+        "This is arithmetic over our own postings — it is NOT a confirmation " +
+        "from a custodian; see the reconciler line below."
+      ));
+    } else {
+      v.className = "v bad";
+      // Each broken asset and its own difference, in its own units. Summing
+      // them would require a common denomination, which would mean a rate,
+      // which is the thing this page must not have.
+      v.appendChild(txt(
+        broken.map((a) => a.solvency + " " + a.asset).join("   ")
+      ));
+      sub.appendChild(txt(
+        "THE BOOKS DO NOT ADD UP. Custody and liabilities disagree for " +
+        broken.map((a) => a.asset).join(", ") +
+        ". This is a bug in how some flow posts its entries, not a custody " +
+        "discrepancy — and a venue that cannot state what it owes must not pay " +
+        "anything out. The reconciler halts withdrawals on this condition."
+      ));
+    }
+
+    const bit = (label, value, kind) => {
+      const span = document.createElement("span");
+      if (kind) {
+        const p = document.createElement("span");
+        p.className = "pill " + kind;
+        p.appendChild(txt(value));
+        span.appendChild(txt(label + " "));
+        span.appendChild(p);
+      } else {
+        span.appendChild(txt(label + " " + value));
+      }
+      meta.appendChild(span);
+    };
+
+    if (r.reconcilerUnavailable) {
+      // The absence of a check and the passing of a check must not look alike.
+      bit("reconciler", "state unreadable", "bad");
+      bit("detail", r.reconcilerUnavailable);
+    } else {
+      const age = ageOf(r.lastPassAt);
+      bit("last reconcile pass", age ? age + " (" + r.lastPassAt + ")" : "never reported");
+      bit(
+        "withdrawals halted",
+        (r.halted || []).length ? r.halted.join(", ") : "none",
+        (r.halted || []).length ? "bad" : "ok"
+      );
+    }
+    bit("generated", r.generatedAt);
+
+    for (const c of r.caveats || []) {
+      const li = document.createElement("li");
+      li.appendChild(txt(c));
+      caveats.appendChild(li);
+    }
+  }
+
+  /*
+   * WHICH ASSET ROWS ARE EXPANDED, kept across a reload of the table.
+   *
+   * The table is rebuilt from scratch on every load (the simplest thing that
+   * cannot leave a stale figure on screen), and rebuilding it would otherwise
+   * collapse a drill-down an operator had just opened — including the one they
+   * opened because something looked wrong. A Set of asset symbols is enough
+   * state to put them back.
+   */
+  const expanded = new Set();
+
+  async function loadTreasury() {
+    const body = $("treasury").tBodies[0];
+    try {
+      const r = await get("treasury");
+      renderSolvency(r);
+      const bad = (r.assets || []).filter((a) => !a.balanced).length;
+      $("treasury-note").textContent = bad
+        ? bad + (bad === 1 ? " asset does not balance" : " assets do not balance")
+        : r.assets.length + " assets · books balance";
+
+      body.textContent = "";
+      for (const a of r.assets) {
+        const tr = body.insertRow();
+        if (!a.balanced) tr.className = "loss";
+
+        // The asset cell carries the expand control. A <button>, not an <a>:
+        // this changes no URL, and an href would be a lie to a keyboard user
+        // and to anyone who middle-clicked it.
+        const first = tr.insertCell();
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "drill";
+        b.setAttribute("aria-expanded", expanded.has(a.asset) ? "true" : "false");
+        b.appendChild(txt(a.asset));
+        b.addEventListener("click", () => toggleHolders(a.asset, tr, b));
+        first.appendChild(b);
+
+        cell(tr, a.custody, "num");
+        cell(tr, a.owedToCustomers, "num");
+        cell(tr, a.fees, "num");
+        cell(tr, a.inflight, "num");
+        const res = cell(tr, a.reserved, "num");
+        if (a.overcommitted) {
+          res.style.color = "var(--warn)";
+          res.title =
+            a.overcommitted +
+            " account(s) have more reserved than they hold — expand the row";
+        }
+        // THE CELL THAT MATTERS. Zero-ness is decided on the base-unit string,
+        // never on the formatted one: a formatter that rounded "0.0000000001"
+        // to "0" would paint a real break green.
+        const d = cell(tr, a.solvency, "diff");
+        if (!isZeroBase(a.solvencyBase)) d.className = "diff bad";
+
+        cell(tr, String(a.holders), "num");
+
+        if (a.halted) {
+          pill(tr, "halted", "bad");
+          tr.cells[tr.cells.length - 1].title = a.haltReason;
+        } else if (a.externallyVerified) {
+          pill(tr, "verified", "ok");
+        } else {
+          // Grey, not green. Absent from the halt set is not the same as
+          // checked and clear, and this is the row where that distinction is
+          // the whole point.
+          pill(tr, "unverified", "dim");
+          tr.cells[tr.cells.length - 1].title = a.externalNote;
+        }
+
+        if (expanded.has(a.asset)) {
+          // Re-open what was open before this reload, without a second click.
+          expanded.delete(a.asset);
+          toggleHolders(a.asset, tr, b);
+        }
+      }
+    } catch (e) {
+      body.textContent = "";
+      const tr = body.insertRow();
+      cell(tr, String((e && e.message) || e)).colSpan = 9;
+      /*
+       * The headline must not keep claiming anything once the figures behind
+       * it could not be fetched. "loading…" forever is the bug this console
+       * has already shipped once.
+       *
+       * THE BOX'S CLASS IS RESET TOO, and specifically to the NEUTRAL one.
+       * Two distinct mistakes are being avoided here. Leaving it alone means a
+       * refresh that fails after a successful bad load keeps the red frame,
+       * which reads as "the books still do not add up" — a claim this branch
+       * has no evidence for. Setting it red deliberately would make the same
+       * claim on purpose. Unknown is its own state: neutral frame, red figure,
+       * and a sentence saying that unknown is not fine.
+       */
+      $("solvency").className = "solvency";
+      const v = $("solvency-v");
+      v.className = "v bad";
+      v.textContent = "unknown";
+      $("solvency-sub").textContent =
+        "The treasury figures could not be loaded, so solvency is UNKNOWN — " +
+        "not fine. " + String((e && e.message) || e);
+      $("solvency-meta").textContent = "";
+      $("solvency-caveats").textContent = "";
+    }
+  }
+
+  /** Expand or collapse one asset's per-account breakdown. */
+  async function toggleHolders(asset, assetRow, button) {
+    const next = assetRow.nextSibling;
+    if (next && next.classList && next.classList.contains("holders")) {
+      next.remove();
+      expanded.delete(asset);
+      button.setAttribute("aria-expanded", "false");
+      return;
+    }
+    expanded.add(asset);
+    button.setAttribute("aria-expanded", "true");
+
+    const tr = assetRow.parentNode.insertBefore(
+      document.createElement("tr"),
+      assetRow.nextSibling
+    );
+    tr.className = "holders";
+    const td = tr.insertCell();
+    td.colSpan = 9;
+    const host = document.createElement("div");
+    host.className = "out";
+    host.appendChild(txt("loading " + asset + " accounts…"));
+    td.appendChild(host);
+
+    let r;
+    try {
+      // 500 is the server's own ceiling (it clamps rather than trusting this),
+      // so asking for it is asking for "as much as you will give me".
+      r = await get("treasury/" + encodeURIComponent(asset) + "/customers?limit=500");
+    } catch (e) {
+      host.className = "out bad";
+      host.textContent = "Could not load " + asset + " accounts: " +
+        String((e && e.message) || e);
+      return;
+    }
+
+    host.className = "out";
+    host.textContent = "";
+
+    /*
+     * THE AGREEMENT LINE, FIRST AND UNMISSABLE.
+     *
+     * The one thing a drill-down is for is that the names add up to the total
+     * above them. Both figures come from the same postings through different
+     * groupings, so a mismatch is a real finding — and it is the kind of
+     * finding that is invisible unless something states it, because every
+     * individual row would still look perfectly reasonable.
+     */
+    const head = document.createElement("div");
+    head.style.cssText = "margin-bottom:8px";
+    const sum = document.createElement("b");
+    sum.appendChild(txt(
+      r.agrees
+        ? "These " + r.total + " account(s) sum to " + r.sumOfHolders + " " +
+          r.asset + ", which matches owed-to-customers exactly."
+        : "MISMATCH: these accounts sum to " + r.sumOfHolders + " " + r.asset +
+          " but owed-to-customers is " + r.owedToCustomers + ". Both come from " +
+          "the same postings, so this is a finding, not rounding."
+    ));
+    if (!r.agrees) sum.style.color = "var(--down)";
+    head.appendChild(sum);
+    if (r.overcommitted) {
+      const w = document.createElement("div");
+      w.style.cssText = "color:var(--warn);margin-top:4px";
+      w.appendChild(txt(
+        r.overcommitted + " account(s) have more reserved against resting " +
+        "orders than they actually hold. The customer-facing balance clamps " +
+        "that to zero available; it is listed here unclamped because it is a " +
+        "condition to investigate."
+      ));
+      head.appendChild(w);
+    }
+    if (r.total > r.holders.length) {
+      const m = document.createElement("div");
+      m.className = "note";
+      m.style.marginTop = "4px";
+      m.appendChild(txt(
+        "Showing the first " + r.holders.length + " of " + r.total +
+        ". The sum above is of ALL of them, not of this page."
+      ));
+      head.appendChild(m);
+    }
+    host.appendChild(head);
+
+    if (r.holders.length === 0) {
+      // Visibly empty, not silently absent — the same rule the asset table
+      // follows. An operator needs to see that a rail has no holders.
+      const none = document.createElement("div");
+      none.appendChild(txt("No account has ever held " + r.asset + "."));
+      host.appendChild(none);
+      return;
+    }
+
+    const tbl = document.createElement("table");
+    const thr = tbl.createTHead().insertRow();
+    for (const c of ["Account", "Balance", "Reserved", "Available"]) {
+      const th = document.createElement("th");
+      th.appendChild(txt(c));
+      thr.appendChild(th);
+    }
+    const tb = tbl.createTBody();
+    for (const h of r.holders) {
+      const row = tb.insertRow();
+      if (h.overcommitted) row.className = "over";
+      // The account id is rendered as a text node like every other value on
+      // this page. No innerHTML anywhere here: an id is attacker-influenced
+      // input on a screen that an operator trusts.
+      cell(row, h.accountId);
+      cell(row, h.balance, "num");
+      cell(row, h.reserved, "num");
+      const av = cell(row, h.available, "num");
+      // Negative available is the signature of an account resting more than
+      // it holds. Flagged, not hidden.
+      if (String(h.availableBase).startsWith("-")) av.style.color = "var(--down)";
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "scroll";
+    wrap.appendChild(tbl);
+    host.appendChild(wrap);
+  }
+
   async function loadRevenue() {
     const body = $("revenue").tBodies[0];
     try {
@@ -764,7 +1120,11 @@
     },
     code: $("sw-code").value.trim(),
     codeField: "sw-code",
-  }), async () => { await Promise.all([loadRevenue(), loadGas(), loadActions()]); });
+    // A SWEEP MOVES FEES INTO THE HOUSE ACCOUNT, so it changes two columns of
+    // the treasury table at once — `fees` falls and `owedToCustomers` rises by
+    // the same amount. Not refreshing it would leave the solvency panel
+    // describing the venue as it was before the action the operator just took.
+  }), async () => { await Promise.all([loadTreasury(), loadRevenue(), loadGas(), loadActions()]); });
 
   wireAction("fund-form", "fund-out", "fund-gas", () => ({
     payload: {
@@ -773,7 +1133,21 @@
     },
     code: $("fg-code").value.trim(),
     codeField: "fg-code",
-  }), async () => { await Promise.all([loadGas(), loadRevenue(), loadActions()]); });
+    /*
+     * Funding a gas float credits CUSTODY and FEES together, so the treasury
+     * table's custody and fees columns both move and the solvency difference
+     * stays at zero.
+     *
+     * AND THAT IS WORTH BEING PRECISE ABOUT, because it is the one case where
+     * a zero on this page is least reassuring: the action records that coins
+     * were sent to the custody wallet without sending them. The books stay
+     * internally consistent — which is all the solvency figure measures — and
+     * the gap between the books and reality is invisible until the reconcile
+     * job compares against the custodian, where it appears as a SHORTFALL. So
+     * the table is refreshed to show the new figures, and the operator is told
+     * in the action's own response note to actually send the asset.
+     */
+  }), async () => { await Promise.all([loadTreasury(), loadGas(), loadRevenue(), loadActions()]); });
 
   (async () => {
     try {
@@ -791,14 +1165,19 @@
     /*
      * allSettled, NOT all.
      *
-     * These five panels are independent: a chain whose balance call is timing
+     * These six panels are independent: a chain whose balance call is timing
      * out must not blank the revenue figures beside it. `Promise.all` rejects
-     * on the first failure, abandoning the other four mid-render and raising
-     * an unhandled rejection — so one sick panel used to be able to leave
-     * four healthy ones showing "loading…". Each loader renders its own error
-     * in its own card; this just makes sure every one of them gets to run.
+     * on the first failure, abandoning the others mid-render and raising an
+     * unhandled rejection — so one sick panel used to be able to leave the
+     * healthy ones showing "loading…". Each loader renders its own error in
+     * its own card; this just makes sure every one of them gets to run.
+     *
+     * The treasury loader is first in the list for the same reason its card is
+     * first on the page: it is the panel someone opens this console to read
+     * during an incident, and starting its request first costs nothing.
      */
     await Promise.allSettled([
-      loadRevenue(), loadGas(), loadCoverage(), loadActions(), loadCustomers(0),
+      loadTreasury(), loadRevenue(), loadGas(), loadCoverage(), loadActions(),
+      loadCustomers(0),
     ]);
   })();

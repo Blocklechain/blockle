@@ -40,6 +40,8 @@
 //                wallet tells you which subaddress received, exactly.
 // -----------------------------------------------------------------------------
 
+import { EVM_CHAIN_RULES } from "./evmscan";
+
 /*
  * NO PER-REQUEST IPv4 PINNING HERE, DELIBERATELY.
  *
@@ -98,6 +100,37 @@ export interface IncomingPayment {
 	/** Base units. */
 	readonly amount: bigint;
 	readonly confirmations: number;
+	/**
+	 * A CHAIN-QUALIFIED IDENTITY FOR THIS ONE ARRIVAL, where the txid alone is
+	 * not unique.
+	 *
+	 * WHY THIS FIELD EXISTS, AND WHY IT IS OPTIONAL RATHER THAN MANDATORY.
+	 *
+	 * The node feed's identity is the bare txid (depositwatcher.ts nodeTransfers
+	 * sets `id = r.txid`) on the stated assumption that "a txid paying two of
+	 * our addresses yields two rows with different addresses". That assumption
+	 * holds for the bitcoind family, whose explorer nets per address. It is
+	 * false twice on EVM: one transaction can pay the same address more than
+	 * once through internal calls, and one transaction can emit several ERC-20
+	 * Transfer events to the same address. Each arrival after the first would be
+	 * swallowed as a replay by the ledger and the customer silently
+	 * under-credited. Chain qualification is needed as well, because the same
+	 * secp256k1 address receives on Ethereum, BSC and Polygon BY DESIGN.
+	 *
+	 * IT IS OPTIONAL BECAUSE CHANGING AN IDEMPOTENCY KEY ON A LIVE VENUE
+	 * DOUBLE-CREDITS EVERY DEPOSIT THAT WAS ALREADY PAID.
+	 *
+	 * The watcher keys its ledger post on `deposit:<transferId>:<address>`. If
+	 * that spelling changed for existing rails, every already-credited deposit
+	 * the custodian still reports in its recent window would arrive under a NEW
+	 * key, the ledger's replay check would not recognise it, and it would be
+	 * credited a second time. So adapters that have always reported a bare txid
+	 * keep reporting exactly that, and only an adapter that sets `ref` gets the
+	 * composite identity — which the watcher then uses verbatim as the transfer
+	 * id, so the key and the `deposit_seen` primary key both become unique
+	 * without a migration and without touching one existing row.
+	 */
+	readonly ref?: string;
 }
 
 /**
@@ -287,6 +320,114 @@ export class JsonRpc {
 			throw new ChainError(`${method} returned no result`);
 		}
 		return body.result;
+	}
+
+	/**
+	 * A BATCHED JSON-RPC CALL: one HTTP request, one array, N results.
+	 *
+	 * WHY THIS IS NOT A PERFORMANCE NICETY. The EVM reconciler has to read one
+	 * balance per customer address, and it read them SERIALLY — one HTTP round
+	 * trip each. At a few thousand customers that is a multi-minute pass against
+	 * a rate-limited endpoint, and a pass that times out half way through is
+	 * worse than no pass at all: books-versus-custody is this venue's only
+	 * insolvency check, and a partial custody figure reads as a SHORTFALL, which
+	 * has no tolerance at any size and halts a perfectly healthy asset.
+	 *
+	 * RESULTS ARE MATCHED BY ID, NEVER BY POSITION. The JSON-RPC 2.0 spec
+	 * explicitly allows a server to return a batch in any order, and some do.
+	 * Reading them positionally would silently attribute customer A's balance to
+	 * customer B — the sum would still be right, which is exactly what makes
+	 * that bug survive review, and then wrong the moment anything cares which
+	 * address held what (a sweep proposal does).
+	 *
+	 * AN INCOMPLETE BATCH THROWS. A missing or errored entry is not zero. Zero
+	 * is the single most dangerous value this file can return.
+	 */
+	async batch<T>(calls: readonly { method: string; params?: unknown[] }[]): Promise<T[]> {
+		if (calls.length === 0) return [];
+		const headers: Record<string, string> = { "content-type": "application/json" };
+		if (this.cfg.user !== undefined) {
+			const basic = Buffer.from(`${this.cfg.user}:${this.cfg.password ?? ""}`)
+				.toString("base64");
+			headers.authorization = `Basic ${basic}`;
+		}
+		const ids = calls.map(() => ++this.id);
+		const body = calls.map((c, i) => ({
+			jsonrpc: "2.0",
+			id: ids[i],
+			method: c.method,
+			params: c.params ?? [],
+		}));
+		const ctl = new AbortController();
+		const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+		let res: Response;
+		try {
+			res = await this.fetchImpl(this.cfg.url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(body),
+				signal: ctl.signal,
+			});
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			throw new ChainError(`batch of ${calls.length} could not reach the node: ${msg}`, true);
+		} finally {
+			clearTimeout(timer);
+		}
+		const text = await res.text();
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			throw new ChainError(
+				`a batch of ${calls.length} returned ${res.status} and a body that is ` +
+					`not JSON: ${text.slice(0, 200)}`,
+				res.status >= 500,
+			);
+		}
+		if (!Array.isArray(parsed)) {
+			/*
+			 * A SINGLE OBJECT INSTEAD OF AN ARRAY IS A REFUSAL, NOT A RESULT.
+			 * Some providers answer a batch they do not support with one error
+			 * object. Treating that as "the first call's answer" would report one
+			 * address's balance as the whole treasury.
+			 */
+			throw new ChainError(
+				`a batch of ${calls.length} was answered with a single object rather ` +
+					"than an array, which means this endpoint does not support batching. " +
+					`Refusing to read it as one result: ${text.slice(0, 200)}`,
+			);
+		}
+		const byId = new Map<number, RpcResult<T>>();
+		for (const entry of parsed as RpcResult<T>[] & { id?: number }[]) {
+			const id = (entry as { id?: unknown }).id;
+			if (typeof id === "number") byId.set(id, entry);
+		}
+		const out: T[] = [];
+		for (let i = 0; i < calls.length; i++) {
+			const entry = byId.get(ids[i]!);
+			if (entry === undefined) {
+				throw new ChainError(
+					`a batch of ${calls.length} came back missing the answer to ` +
+						`${calls[i]!.method} (id ${ids[i]}). Refusing to treat a missing ` +
+						"answer as a zero.",
+					true,
+				);
+			}
+			if (entry.error !== undefined && entry.error !== null) {
+				throw new ChainError(
+					`${calls[i]!.method} failed inside a batch: ` +
+						(entry.error.message ?? JSON.stringify(entry.error)),
+					false,
+					typeof entry.error.code === "number" ? entry.error.code : undefined,
+				);
+			}
+			if (entry.result === undefined) {
+				throw new ChainError(`${calls[i]!.method} returned no result inside a batch`);
+			}
+			out.push(entry.result);
+		}
+		return out;
 	}
 
 	get canSend(): boolean {
@@ -809,17 +950,90 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 /* ----------------------------------------------------------------- EVM nodes */
 
 /**
+ * WHAT AN EVM DEPOSIT ADDRESS SOURCE LOOKS LIKE TO THIS ADAPTER.
+ *
+ * A structural type rather than an import of EvmAddressIndex, for the same
+ * reason blockchain.ts declares `AddressPool` structurally: the adapter stays
+ * testable without a database, and it cannot reach anything else on the real
+ * object. Note what is NOT on this interface — nothing that signs, nothing that
+ * derives a private key, nothing that takes a seed. The thing behind it holds an
+ * extended PUBLIC key and is mathematically incapable of producing a signature.
+ */
+export interface EvmDepositAddresses {
+	/**
+	 * RETURNS THE INDEX AS WELL AS THE ADDRESS, unlike `AddressPool.take`.
+	 *
+	 * `AddressPool.take()` drops the index, which is survivable for BLOCK
+	 * because the operator sweeps the whole wallet in one go. It is not
+	 * survivable here: an EVM sweep is per address, and without the index the
+	 * offline signer cannot re-derive the key for the specific address holding
+	 * a customer's coins.
+	 */
+	take(userId: string): { address: string; index: number };
+	allAddresses(): readonly string[];
+	status(): { issued: number; nextIndex: number; fingerprint: string };
+}
+
+/** What a deposit scan looks like to this adapter. See evmscan.ts. */
+export interface EvmIncomingSource {
+	readonly chain: string;
+	haltedReason(): string | undefined;
+	/**
+	 * Why new deposit addresses are not being issued, if they are not.
+	 *
+	 * SEPARATE FROM `haltedReason` BECAUSE THE TWO MEAN OPPOSITE THINGS ABOUT
+	 * THE CHAIN. A halt means the endpoint has been caught under-reporting, so
+	 * nothing may be credited and a human has to look. This means the chain reads
+	 * fine and the venue has more value parked at customer addresses than it has
+	 * declared it will leave waiting for an operator with an offline signer — so
+	 * it stops accepting NEW deposits while crediting the ones already on their
+	 * way. One flag for both would make a routine backlog look like a lying node.
+	 */
+	issuanceShutReason(): string | undefined;
+	preflight(): Promise<readonly string[]>;
+	scan(): Promise<{
+		readonly payments: readonly IncomingPayment[];
+		readonly pending: readonly IncomingPayment[];
+		readonly cursor: number;
+		readonly lagAlarm: string | undefined;
+		readonly issuanceShut: string | undefined;
+	}>;
+}
+
+/**
  * The EVM adapter. Any Ethereum-compatible JSON-RPC: OctaSpace, Rethereum,
- * Ethereum Classic, HyperEVM, and whatever else arrives.
+ * Ethereum Classic, HyperEVM, Ethereum, BSC, Polygon.
  *
- * WHAT IT CANNOT DO, STATED FIRST: an EVM node holds no keys. There is no
- * `getnewaddress` and no `sendtoaddress`. So this adapter READS, and both
- * deposits-per-customer and withdrawals need a signer that lives elsewhere.
- * `probe()` reports that as a capability, which makes `canGoLive` refuse — a
- * coin on this route cannot be promoted until the signer exists.
+ * WHAT IT CANNOT DO, STATED FIRST, BECAUSE THAT IS STILL THE IMPORTANT HALF:
+ * an EVM node holds no keys, so THIS ADAPTER CANNOT SEND. Not configurably,
+ * not with a flag. A withdrawal needs a signer, the signer for these rails
+ * lives on a host with no inbound network, and nothing on this box can reach
+ * it. `canSend` is a constant false and `send()` is a permanent rejection.
  *
- * That is the honest outcome. An adapter that generated addresses from a key it
- * invented would be generating addresses nobody can spend from.
+ * WHAT CHANGED, AND THE EXACT PREMISE THAT CHANGED.
+ *
+ * This file used to say an EVM node "holds no keys, so deposits-per-customer
+ * need a signer that lives elsewhere", and treated address issuance and sending
+ * as the same impossibility. They are not the same, and the difference is a
+ * property of the curve.
+ *
+ * secp256k1 HAS WATCH-ONLY DERIVATION. A BIP32 non-hardened child public key is
+ * `parentPub + IL*G` — arithmetic on public values. So with an account-level
+ * xpub this process can derive `m/44'/60'/0'/0/i` for every customer and hold
+ * ZERO spending authority for any of them. That is not true of BLOCK, whose
+ * ML-DSA signatures have no watch-only derivation, which is exactly why
+ * blockaddresspool.ts has to ship addresses in from an offline machine. For EVM
+ * the same security posture is achievable WITHOUT the operator ceremony, and
+ * that is the whole reason this rail is built this way.
+ *
+ * So the capabilities are now split where the maths splits them:
+ *   canDeriveAddresses — true when an xpub-backed address source is configured.
+ *   canSend            — false, permanently, on this host.
+ *
+ * AND IF NO XPUB IS CONFIGURED, NOTHING CHANGES. `newAddress` refuses with the
+ * same sentence it always did and `canDeriveAddresses` is false, so an operator
+ * who sets a URL and forgets the xpub gets a correctly SHUT rail rather than a
+ * rail that looks open and quietly answers "no deposits".
  */
 export class EvmRpcAdapter implements ChainAdapter {
 	readonly route = "evm-rpc";
@@ -829,10 +1043,45 @@ export class EvmRpcAdapter implements ChainAdapter {
 		private readonly rpc: JsonRpc,
 		private readonly cfg: {
 			readonly decimals: number;
-			/** Addresses whose balances together are this venue's holding. */
+			/**
+			 * The venue's DECLARED addresses — hot, gas, treasury.
+			 *
+			 * Separate from the issued customer addresses, which arrive through
+			 * `addresses` on the address source. Both are custody and `balance()`
+			 * unions them; they are configured separately because one is a
+			 * deliberate operator declaration and the other grows by itself.
+			 */
 			readonly addresses: readonly string[];
 			/** Token contract, for an ERC-20 rather than the native coin. */
 			readonly token?: string;
+			/**
+			 * The xpub-backed per-customer deposit address source.
+			 *
+			 * Absent means `newAddress` refuses and the rail is shut. Present
+			 * means this adapter can issue addresses and MUST count them in
+			 * `balance()` — those two obligations arrive together, and splitting
+			 * them is how a venue issues deposit addresses whose balances its own
+			 * reconciler cannot see, which presents as a shortfall and halts the
+			 * asset.
+			 */
+			readonly depositAddresses?: EvmDepositAddresses;
+			/**
+			 * The durable block scanner. Absent means `incoming()` keeps throwing.
+			 *
+			 * Deliberately NOT defaulted to something that returns an empty list:
+			 * see `incoming()`.
+			 */
+			readonly incomingSource?: EvmIncomingSource;
+			/**
+			 * EIP-155 chain id, asserted by `probe()` against `eth_chainId`.
+			 *
+			 * Worth a whole round trip because a scanner pointed at the wrong
+			 * chain has NO symptom: it reads valid blocks, valid balances and
+			 * valid transactions that simply never contain our addresses, and
+			 * reports no deposits forever. A Polygon rail on an Ethereum URL is
+			 * one character of config away at all times.
+			 */
+			readonly chainId?: number;
 		},
 	) {
 		for (const a of cfg.addresses) {
@@ -843,13 +1092,81 @@ export class EvmRpcAdapter implements ChainAdapter {
 		if (cfg.token !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(cfg.token)) {
 			throw new ChainError(`${symbol}: not a contract address: ${cfg.token}`);
 		}
+		if (cfg.token !== undefined && cfg.depositAddresses !== undefined) {
+			/*
+			 * ERC-20 ON AN xpub RAIL IS NOT HALF-SHIPPED HERE.
+			 *
+			 * Issuing per-customer addresses for a TOKEN would be the same
+			 * derivation, but detecting a token deposit is a different problem:
+			 * Transfer-event scanning, with log-index idempotency and a usable
+			 * log backfill window. Measured, the free endpoints do not have one —
+			 * Ethereum prunes logs at about 32 hours (failing loudly) and BSC at
+			 * about 59 hours (failing SILENTLY, HTTP 200 with an empty array).
+			 * Worse, the deposit watcher resolves a node feed by SETTLEMENT asset
+			 * inside a loop over all four of USDT's custody ids, so one token
+			 * adapter would be polled four times and the custody posting would
+			 * land under whichever network ran first.
+			 *
+			 * Rather than let a future caller configure that combination and
+			 * discover it in production, it is refused at construction with the
+			 * reason attached.
+			 */
+			throw new ChainError(
+				`${symbol}: per-customer deposit addresses are wired for the NATIVE coin ` +
+					"only. An ERC-20 rail additionally needs Transfer-event scanning with " +
+					"log-index idempotency and a log backfill window no endpoint available " +
+					"to this venue serves, plus a deposit watcher keyed by custody id " +
+					"rather than by settlement asset. Refusing to half-ship it.",
+			);
+		}
 	}
 
 	async probe(): Promise<ChainCapabilities> {
-		const notes: string[] = [
-			"an EVM node holds no keys: this route reads balances only. Deposit " +
-				"addresses and withdrawals need a signer, which is not wired here.",
-		];
+		/*
+		 * THE FIRST NOTE USED TO BE ONE SENTENCE AND HALF OF IT IS NOW WRONG.
+		 *
+		 * It read: "an EVM node holds no keys: this route reads balances only.
+		 * Deposit addresses and withdrawals need a signer, which is not wired
+		 * here." The first clause is still true and always will be. The second
+		 * clause conflated two different things, and once an xpub is loaded it
+		 * is a lie about half of them — an xpub issues addresses and signs
+		 * nothing. `probe().notes` is what an operator actually reads when they
+		 * are deciding whether a rail is safe, so it says the two things
+		 * separately now.
+		 */
+		const notes: string[] = [];
+		if (this.cfg.depositAddresses === undefined) {
+			notes.push(
+				"no deposit-address source is configured, so this route reads balances " +
+					"only. Per-customer addresses need an account xpub (EVM_ACCOUNT_XPUB), " +
+					"which confers no spending authority and is therefore safe to hold here.",
+			);
+		} else {
+			const st = this.cfg.depositAddresses.status();
+			/*
+			 * THIS LINE IS EMITTED BY THE ADAPTER THAT WILL ACTUALLY USE THE
+			 * SOURCE, AND THAT IS THE POINT, NOT A DETAIL.
+			 *
+			 * The BLOCK pool bug was maddening precisely because the API logged
+			 * "block pool: 999 free of 1000" at startup from its OWN reference
+			 * while the deposit route refused every request — the pool had never
+			 * been forwarded to the adapter. The log proved nothing because it
+			 * described a different object. So the only place allowed to claim an
+			 * address source is loaded is the object that would issue from it,
+			 * and the fingerprint is included so an operator can confirm it is
+			 * the xpub they deployed rather than merely "an" xpub.
+			 */
+			notes.push(
+				`per-customer deposit addresses are derived here from xpub ` +
+					`${st.fingerprint} (${st.issued} issued, next index ${st.nextIndex}). ` +
+					"The xpub cannot sign: this host holds no private key for any of them.",
+			);
+		}
+		notes.push(
+			"this route CANNOT send. An EVM node signs nothing, and the signer for " +
+				"this rail is on a host with no inbound network — holding an xpub " +
+				"changes nothing about that.",
+		);
 		let height: number | undefined;
 		try {
 			const hex = await this.rpc.call<string>("eth_blockNumber");
@@ -864,6 +1181,45 @@ export class EvmRpcAdapter implements ChainAdapter {
 				canSend: false,
 				notes: [e instanceof Error ? e.message : String(e)],
 			};
+		}
+
+		/*
+		 * IS THIS EVEN THE RIGHT CHAIN? Asked before anything else is believed.
+		 *
+		 * Reported as UNREACHABLE on a mismatch rather than as a note, because
+		 * every number this adapter would go on to return describes a different
+		 * chain than the operator thinks is configured — the same reasoning the
+		 * bitcoind adapter uses when it finds the node holds a custody key.
+		 */
+		if (this.cfg.chainId !== undefined) {
+			try {
+				const idHex = await this.rpc.call<string>("eth_chainId");
+				const id = Number(BigInt(idHex));
+				if (id !== this.cfg.chainId) {
+					return {
+						reachable: false,
+						synced: false,
+						height,
+						decimals: this.cfg.decimals,
+						canDeriveAddresses: false,
+						canSend: false,
+						notes: [
+							...notes,
+							`REFUSED: the endpoint reports chain id ${id} but this rail is ` +
+								`configured for ${this.cfg.chainId}. The URL points at the ` +
+								"wrong chain, and a scanner on the wrong chain has no symptom: " +
+								"it reads valid blocks that never contain our addresses and " +
+								"reports no deposits forever.",
+						],
+					};
+				}
+			} catch (e) {
+				notes.push(
+					`eth_chainId is unavailable, so the chain cannot be confirmed: ${
+						e instanceof Error ? e.message : String(e)
+					}`,
+				);
+			}
 		}
 		/*
 		 * `eth_syncing` is false on a synced node and an object while catching
@@ -897,61 +1253,258 @@ export class EvmRpcAdapter implements ChainAdapter {
 			}
 		}
 
+		if (this.cfg.incomingSource !== undefined) {
+			const halted = this.cfg.incomingSource.haltedReason();
+			if (halted !== undefined) {
+				notes.push(`THE DEPOSIT SCAN IS HALTED: ${halted}`);
+			}
+			/*
+			 * REPORTED SEPARATELY FROM THE HALT, because an operator reading
+			 * probe notes needs to tell "the endpoint lied to us" from "we have
+			 * a sweep backlog". Both shut something; only one of them means the
+			 * chain cannot be trusted, and treating a backlog as an integrity
+			 * failure is how a real integrity failure gets waved through.
+			 */
+			const gated = this.cfg.incomingSource.issuanceShutReason();
+			if (gated !== undefined) {
+				notes.push(`NEW DEPOSIT ADDRESSES ARE NOT BEING ISSUED: ${gated}`);
+			}
+		} else {
+			notes.push(
+				"no deposit scanner is configured, so `incoming` refuses rather than " +
+					"reporting an empty list. A rail can issue addresses and still not be " +
+					"watching them, and that combination must not look like 'no deposits'.",
+			);
+		}
+
 		return {
 			reachable: true,
 			synced,
 			height,
 			decimals: this.cfg.decimals,
-			canDeriveAddresses: false,
+			/*
+			 * DRIVEN BY CONFIGURATION, NEVER HARDCODED TRUE.
+			 *
+			 * This was a constant `false`, with the reason "an EVM node holds no
+			 * keys". The premise was wrong in one direction only: issuing an
+			 * address needs no key on secp256k1. So it now reports whether an
+			 * xpub-backed source is actually wired, which means an operator who
+			 * configures a URL and forgets the xpub gets a shut rail rather than
+			 * a rail that looks open. `canGoLive` reads this, so a rail cannot be
+			 * promoted by a comment.
+			 */
+			canDeriveAddresses: this.cfg.depositAddresses !== undefined,
+			/*
+			 * STAYS FALSE. There is no configuration that can change it, and
+			 * test/evmrailguards.test.ts asserts that structurally. An xpub
+			 * confers zero spending authority, so holding one changes nothing
+			 * about withdrawal; a rail with deposits open and no return path is
+			 * the worst state available, which is what RAIL_BLOCKERS is for.
+			 */
 			canSend: false,
 			notes,
 		};
 	}
 
+	/**
+	 * Every address whose balance is this venue's holding, at ONE pinned block.
+	 *
+	 * THREE THINGS CHANGED HERE AND ALL THREE ARE LOAD-BEARING.
+	 *
+	 * 1. THE ISSUED CUSTOMER ADDRESSES ARE INCLUDED. Coins sitting at a
+	 *    customer's deposit address before a sweep ARE custody — the venue has
+	 *    already credited that customer, so it owes the balance. Counting only
+	 *    the declared treasury would show the liability without the asset, which
+	 *    is a SHORTFALL, which has no tolerance at any size and halts the asset.
+	 *    blockchain.ts:224-227 does the same union for BLOCK, for this reason.
+	 *
+	 * 2. THE READS ARE BATCHED. They were serial — one HTTP round trip per
+	 *    address — which with one address per customer is one round trip per
+	 *    customer per reconcile pass.
+	 *
+	 * 3. EVERY READ IS PINNED TO ONE EXPLICIT BLOCK NUMBER, never "latest". A
+	 *    sum taken across moving blocks can count a sweep in flight at both ends
+	 *    or at neither: the money leaves address A at block N and arrives at the
+	 *    hot address at block N+1, so a read of A at N+1 and the hot address at
+	 *    N misses it entirely and reports a shortfall that does not exist. One
+	 *    block, one snapshot, one number.
+	 *
+	 * AND AN INCOMPLETE PASS THROWS RATHER THAN RETURNING A PARTIAL SUM. The
+	 * reconciler already has an UNAVAILABLE path that alerts without halting;
+	 * that is the correct destination for "we could not read it". A partial sum
+	 * is indistinguishable from a real shortfall, and a real shortfall halts
+	 * withdrawals for every customer holding that asset.
+	 */
 	async balance(): Promise<bigint> {
-		if (this.cfg.addresses.length === 0) {
+		const addresses = this.custodyAddresses();
+		if (addresses.length === 0) {
 			throw new ChainError(
 				`${this.symbol}: no holding addresses are configured, so there is no ` +
 					"balance to report. Refusing to return zero, which would read as " +
 					"an empty treasury.",
 			);
 		}
+
+		// Pin the block FIRST, so every balance below describes the same instant.
+		const at = await this.rpc.call<string>("eth_blockNumber");
+		if (typeof at !== "string" || !/^0x[0-9a-fA-F]+$/.test(at)) {
+			throw new ChainError(
+				`${this.symbol}: eth_blockNumber returned ${JSON.stringify(at)}, so there ` +
+					"is no block to pin the custody read to. Refusing to fall back to " +
+					"'latest': a sum read across moving blocks can miss a sweep in flight " +
+					"and report a shortfall that does not exist.",
+			);
+		}
+
+		// Chunked at 100: measured working on every endpoint this rail would
+		// use, and small enough that one oversized request cannot be the thing
+		// that fails a reconcile pass.
+		const CHUNK = 100;
 		let total = 0n;
-		for (const a of this.cfg.addresses) {
-			total += this.cfg.token === undefined
-				? await this.nativeBalance(a)
-				: await this.tokenBalance(a);
+		for (let i = 0; i < addresses.length; i += CHUNK) {
+			const slice = addresses.slice(i, i + CHUNK);
+			const calls = slice.map((a) =>
+				this.cfg.token === undefined
+					? { method: "eth_getBalance", params: [a, at] }
+					: {
+							method: "eth_call",
+							params: [
+								{
+									to: this.cfg.token,
+									data: "0x70a08231" + a.slice(2).toLowerCase().padStart(64, "0"),
+								},
+								at,
+							],
+						},
+			);
+			const results = await this.rpc.batch<string>(calls);
+			if (results.length !== slice.length) {
+				throw new ChainError(
+					`${this.symbol}: asked for ${slice.length} balances at block ` +
+						`${at} and got ${results.length}. Refusing to report a partial ` +
+						"custody total — a partial sum is indistinguishable from a real " +
+						"shortfall, and a shortfall halts withdrawals for this asset.",
+					true,
+				);
+			}
+			for (const hex of results) total += this.hexToBig(hex);
 		}
 		return total;
 	}
 
-	// The parameters are declared though unused: this class implements
-	// ChainAdapter, and a reader checking the shape should see the same
-	// signature here as on the interface rather than wondering if it diverged.
-	newAddress(_label: string): Promise<string> {
-		return Promise.reject(
-			new ChainError(
+	/**
+	 * The declared treasury plus every issued customer address, de-duplicated.
+	 *
+	 * De-duplicated because the two sources can legitimately overlap — an
+	 * operator may declare the hot address that the signer derived from a
+	 * reserved index — and a duplicate would be counted twice, inventing custody
+	 * that does not exist.
+	 */
+	private custodyAddresses(): readonly string[] {
+		const issued = this.cfg.depositAddresses?.allAddresses() ?? [];
+		const seen = new Map<string, string>();
+		for (const a of [...this.cfg.addresses, ...issued]) {
+			seen.set(a.toLowerCase(), a);
+		}
+		return [...seen.values()];
+	}
+
+	/**
+	 * A per-customer deposit address, derived from an xpub, holding no key.
+	 *
+	 * `label` is the account id, matching the BLOCK route: the source keys on
+	 * it, so a customer returning to the deposit screen gets the address they
+	 * already have rather than consuming another index. That is not a nicety —
+	 * a second address orphans any deposit already in flight to the first one,
+	 * which then arrives somewhere nobody is attributed to.
+	 *
+	 * THE REFUSAL BELOW IS THE ORIGINAL ONE, WORD FOR WORD, AND IT STILL
+	 * APPLIES. Without an xpub this route genuinely cannot issue an address, and
+	 * an operator who has configured a URL but no xpub needs to read the same
+	 * sentence they would have read before this rail existed.
+	 */
+	async newAddress(label: string): Promise<string> {
+		const source = this.cfg.depositAddresses;
+		if (source === undefined) {
+			throw new ChainError(
 				`${this.symbol}: an EVM node cannot issue a deposit address — it holds ` +
-					"no keys. Per-customer addresses need a signer (an HD key or a " +
-					"custodian), which this route does not have.",
-			),
-		);
+					"no keys. Per-customer addresses need an account xpub " +
+					"(EVM_ACCOUNT_XPUB), derived on the signer host and configured here; " +
+					"the xpub itself cannot sign, so it is safe on this box.",
+			);
+		}
+		const owner = label.trim();
+		if (owner === "") {
+			throw new ChainError(
+				`${this.symbol}: a deposit address needs an owner. An address issued ` +
+					"against a blank label could not be attributed to anyone, and on a " +
+					"chain with no memo field that is unrecoverable.",
+			);
+		}
+		return source.take(owner).address;
 	}
 
-	async incoming(): Promise<readonly IncomingPayment[]> {
-		/*
-		 * Deliberately empty AND loud. Finding incoming transfers on an EVM
-		 * chain means scanning logs or blocks per watched address, which is a
-		 * real piece of work — and returning [] quietly would make the deposit
-		 * watcher report "no deposits" for a chain it is not actually watching.
-		 */
-		throw new ChainError(
-			`${this.symbol}: incoming-transfer scanning is not implemented for the ` +
-				"EVM route. Refusing to return an empty list, which would look like " +
-				"'no deposits' rather than 'not watching'.",
-		);
+	/**
+	 * Everything that has arrived, from the durable scanner.
+	 *
+	 * THE THROW IS PRESERVED, AND FOR THE ORIGINAL REASON. Without a scanner
+	 * this returns an error, never an empty array: an empty array makes the
+	 * deposit watcher report "no deposits" for a chain nobody is watching, which
+	 * is the one failure mode that looks exactly like everything being fine.
+	 * That is still true of a rail that has an xpub and no scanner, so holding
+	 * an xpub does not soften it.
+	 *
+	 * `sinceHeight` IS IGNORED, DELIBERATELY, AND THAT IS NOT A SHORTCUT. The
+	 * interface offers it, but the watcher calls `incoming()` with no argument
+	 * and the watcher process is one-shot per systemd tick, so any watermark
+	 * this adapter accepted from a caller would be re-derived from nothing every
+	 * cycle. The real cursor is durable, in the scanner's own table, and it
+	 * NEVER advances past `tip - confirmations`. Accepting a caller's height
+	 * here would let a bug elsewhere ask this rail to re-scan from the tip and
+	 * skip every block in between.
+	 *
+	 * PENDING ARRIVALS ARE RETURNED TOO, with their true confirmation counts.
+	 * The watcher's existing confirmation gate records them as `pending` and
+	 * credits nothing, which is what makes "3 of 32 confirmations" visible in
+	 * the first minute. Nothing above the safe head can be credited, because the
+	 * number reported is the real one.
+	 */
+	async incoming(_sinceHeight?: number): Promise<readonly IncomingPayment[]> {
+		const source = this.cfg.incomingSource;
+		if (source === undefined) {
+			throw new ChainError(
+				`${this.symbol}: incoming-transfer scanning is not configured for this ` +
+					"EVM rail. Refusing to return an empty list, which would look like " +
+					"'no deposits' rather than 'not watching'.",
+			);
+		}
+		const r = await source.scan();
+		return [...r.payments, ...r.pending];
 	}
 
+	/**
+	 * PERMANENTLY A REJECTION, AND THE XPUB DID NOT CHANGE THAT.
+	 *
+	 * This is the guard most likely to be "fixed" by someone who has just read
+	 * that this adapter can now issue addresses, so the reasoning is written out
+	 * rather than assumed:
+	 *
+	 *   An xpub derives public keys. It cannot produce a signature — not with
+	 *   more compute, not with a flaw in our code, not ever. So there is nothing
+	 *   on this host for this method to sign WITH, and the fix is not a flag,
+	 *   it is a key, and putting a key here is the one thing the whole design
+	 *   exists to avoid. An attacker who fully owns this box can read the
+	 *   ledger, read every customer record, read the xpub and enumerate every
+	 *   deposit address — and still cannot move one wei.
+	 *
+	 * Withdrawal on this rail is an offline-signer loop: APPROVED withdrawals
+	 * accumulate into an unsigned proposal, a human carries it to a host with no
+	 * inbound network, that host re-derives every source from its OWN seed and
+	 * checks every destination against its own compiled allow-list, and a signed
+	 * blob comes back to be broadcast. That is a different shape from this
+	 * synchronous `send`, which is why it is NOT implemented as this method with
+	 * a key added.
+	 */
 	send(_args: {
 		to: string;
 		amount: bigint;
@@ -959,25 +1512,12 @@ export class EvmRpcAdapter implements ChainAdapter {
 	}): Promise<{ txid: string }> {
 		return Promise.reject(
 			new ChainError(
-				`${this.symbol}: this route cannot send. An EVM node signs nothing; ` +
-					"a withdrawal needs a signer this service does not hold.",
+				`${this.symbol}: this route cannot send. An EVM node signs nothing, and ` +
+					"an xpub cannot sign either — the signer for this rail is on a host " +
+					"with no inbound network. A withdrawal here is an offline-signed " +
+					"batch, not a call to this method.",
 			),
 		);
-	}
-
-	private async nativeBalance(address: string): Promise<bigint> {
-		const hex = await this.rpc.call<string>("eth_getBalance", [address, "latest"]);
-		return this.hexToBig(hex);
-	}
-
-	private async tokenBalance(address: string): Promise<bigint> {
-		// balanceOf(address) — selector 0x70a08231, argument left-padded to 32.
-		const data = "0x70a08231" + address.slice(2).toLowerCase().padStart(64, "0");
-		const hex = await this.rpc.call<string>("eth_call", [
-			{ to: this.cfg.token, data },
-			"latest",
-		]);
-		return this.hexToBig(hex);
 	}
 
 	private async erc20Decimals(): Promise<number> {
@@ -1284,6 +1824,31 @@ export function adapterFromEnv(args: {
 	decimals: number | undefined;
 	env: AdapterEnv;
 	fetchImpl?: typeof fetch;
+	/**
+	 * THE SELF-CUSTODIED EVM RAIL'S WIRING, PASSED AS ONE NAMED FIELD ON AN
+	 * OPTIONS OBJECT — NOT AS A TRAILING PARAMETER.
+	 *
+	 * That is a direct response to a bug this repository has already paid for.
+	 * `blockAdapterFromEnv(env, fetchImpl?, pool?)` was called with one
+	 * argument, so the BLOCK address pool was loaded, logged at startup, and
+	 * never reached the adapter: there is no arity error for a missing optional
+	 * trailing argument, so the call compiled, ran, and silently disabled
+	 * per-customer BLOCK deposits. A thousand addresses sat unused while
+	 * customers were told the rail was shut.
+	 *
+	 * THE EVM VERSION OF THAT BUG WOULD BE THE MIRROR IMAGE AND IT LOSES MONEY
+	 * RATHER THAN MERELY ANNOYING PEOPLE. A rail with an xpub wired and the
+	 * scanner NOT wired looks fully open — it issues addresses, the gas check
+	 * passes, the deposit screen works — and answers "no deposits" at HTTP 200
+	 * forever. Hence: a named field, and `probe()` reports what this adapter
+	 * actually holds (including the xpub fingerprint) rather than what some
+	 * other reference to the same objects believes.
+	 */
+	evm?: {
+		readonly depositAddresses?: EvmDepositAddresses;
+		readonly incomingSource?: EvmIncomingSource;
+		readonly chainId?: number;
+	};
 }): ChainAdapter | undefined {
 	const pre = `CHAIN_${args.symbol.toUpperCase()}_`;
 	const url = args.env[`${pre}URL`];
@@ -1344,10 +1909,25 @@ export function adapterFromEnv(args: {
 			return new MoneroRpcAdapter(args.symbol, rpc, args.decimals, 0, daemon);
 		}
 		case "evm-rpc": {
+			/*
+			 * THE CHAIN ID COMES FROM THE DECLARED RULES WHEN THE CALLER DID NOT
+			 * SUPPLY ONE, so a rail for a chain this venue has measured cannot be
+			 * configured without the chain-id assertion. An unlisted EVM chain
+			 * (OctaSpace, Rethereum) simply has no rule and no assertion, which is
+			 * the behaviour it has always had.
+			 */
+			const chainId = args.evm?.chainId ?? EVM_CHAIN_RULES[args.symbol.toUpperCase()]?.chainId;
 			return new EvmRpcAdapter(args.symbol, rpc, {
 				decimals: args.decimals,
 				addresses: declaredAddresses,
 				...(token === undefined ? {} : { token }),
+				...(args.evm?.depositAddresses === undefined
+					? {}
+					: { depositAddresses: args.evm.depositAddresses }),
+				...(args.evm?.incomingSource === undefined
+					? {}
+					: { incomingSource: args.evm.incomingSource }),
+				...(chainId === undefined ? {} : { chainId }),
 			});
 		}
 		default:

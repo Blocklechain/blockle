@@ -60,6 +60,18 @@
 // -----------------------------------------------------------------------------
 
 import { ASSETS, custodyIds, gasAssetFor, networkOf, settlementAsset } from "./assets";
+/*
+ * The SOL blocker quotes the published minimum deposit and the dust floor, and
+ * it quotes them from the module that ENFORCES them rather than retyping the
+ * numbers. The two have already drifted once in this service — the SOL
+ * activation remedy used to tell an operator to "send a small amount", which is
+ * not an amount — and a customer-facing minimum that disagrees with the floor
+ * the sweeper applies is the same class of mistake with a worse outcome.
+ */
+import {
+	SOL_MINIMUM_DEPOSIT_LAMPORTS,
+	SOL_SWEEP_DUST_FLOOR_LAMPORTS,
+} from "./solconsolidation";
 import { LIVE_FEES } from "./withdrawalfees";
 
 /**
@@ -242,148 +254,321 @@ export const SOL_ACTIVATION = {
 
 export const RAIL_BLOCKERS: Readonly<Record<string, RailBlocker>> = {
 	/*
-	 * ETH AND BNB: ONE CAUSE, AND IT IS A BILL.
+	 * ETH AND BNB: THE CUSTODY MODEL UNDER THESE CHANGED, AND THE OLD CAUSE IS
+	 * NO LONGER THE REASON THEY ARE SHUT.
 	 *
-	 * Re-measured 2026-11-26. Three independent readings agree that this is a
-	 * tier gate on the account and not a fault in our request:
+	 * WHAT THIS ENTRY USED TO SAY, AND WHY IT IS GONE. It recorded one
+	 * commercial cause: BitGo answers `POST /{eth,bsc}/wallet/{id}/address` with
+	 * 403 and "A pricing plan is required to create receive addresses", the
+	 * enterprise is on the free self-serve tier (activePricingType.name
+	 * "starter", isContractedClient false), and not one EVM receive address has
+	 * ever been created on the account (lastChainIndex {"0":0,"1":-1}) while an
+	 * equally unprovisioned LTC wallet mints them on request. Every word of that
+	 * is still TRUE and it is still MEASURED. It is simply no longer the
+	 * blocker, because the venue is not asking BitGo for these addresses any
+	 * more. The BitGo pricing conversation is now optional rather than
+	 * load-bearing, and that is the whole point of what replaced it.
 	 *
-	 *   - The live service's own log, this morning: BitGo answers
-	 *     `POST /eth/wallet/6b06f02a…/address` and `POST /bsc/wallet/6b06f03a…
-	 *     /address` with 403 Forbidden, `{"error":"A pricing plan is required to
-	 *     create receive addresses on Wallet <id>. Contact BitGo support for
-	 *     more information."}`.
-	 *   - `GET /api/v2/enterprise/64b1f1c1…` reports the account on BitGo's free
-	 *     self-serve tier: `activePricingType.name "starter"`, `publicLabels
-	 *     ["starterAccount"]`, `isContractedClient false`, `accountType
-	 *     "individual"`. The 403's wording is therefore literally accurate —
-	 *     there is no plan at all, not the wrong plan.
-	 *   - Every EVM wallet on the account reports `lastChainIndex {"0":0,
-	 *     "1":-1}` — index 0 and nothing else. Not one EVM receive address has
-	 *     ever been created on this account, which is a gate rather than a
-	 *     transient fault. Meanwhile an equally unprovisioned LTC wallet mints
-	 *     addresses on request.
+	 * WHAT REPLACED IT. ETH, BSC and Polygon are now SELF-CUSTODIED rails built
+	 * on an account-level xpub: this host holds an extended PUBLIC key, derives
+	 * `m/44'/60'/0'/0/i` per customer with zero spending authority, and the
+	 * seed never comes near the box. That is possible because secp256k1 HAS
+	 * watch-only derivation — a non-hardened child public key is
+	 * `parentPub + IL*G`, arithmetic on public values — which is exactly what
+	 * BLOCK cannot do and the reason blockaddresspool.ts has to ship addresses
+	 * in from an offline machine.
 	 *
-	 * NOT A CODE DEFECT. `BitGoDeposits.createReceiveAddress` sends the right
-	 * request and will work unchanged the moment a plan exists. There is also
-	 * no API to see or change the plan — every pricing GET 404s — so this is a
-	 * sales conversation by construction, which is why the owner is commercial.
+	 * SAY THE UNCOMFORTABLE PART OUT LOUD, BECAUSE IT IS THE ARGUMENT FOR DOING
+	 * IT THIS WAY: these new rails will be MORE secure than the six BitGo rails
+	 * already live. BitGo's spending authority on this venue is a bearer token
+	 * (BITGO_ACCESS_TOKEN) sitting in a file on this internet-facing host. The
+	 * new rails' spending authority is not on this host at all, in any form, and
+	 * cannot be — an xpub is mathematically incapable of producing a signature.
 	 *
-	 * AND NO, THE SHARED ROOT ADDRESS IS NOT A STOPGAP. Both wallets already
-	 * expose a working root receiveAddress, and neither chain has any memo or
-	 * tag mechanism, so two customers depositing the same asset would be
-	 * permanently indistinguishable while reconciliation still balanced. That
-	 * is how a venue credits the wrong account and never finds out.
+	 * AND THE SHARED ROOT ADDRESS IS STILL NOT A STOPGAP, which is worth
+	 * keeping because it will be proposed again every time this takes a week
+	 * longer than someone hoped. Both BitGo wallets already expose a working
+	 * root receiveAddress, and neither chain has any memo or tag mechanism, so
+	 * two customers depositing the same asset would be permanently
+	 * indistinguishable while reconciliation still balanced. That is how a venue
+	 * credits the wrong account and never finds out.
+	 *
+	 * WHY THE CAUSES BELOW ARE NO LONGER PURELY COMMERCIAL. test/settlement.test
+	 * .ts asserted exactly that — "ETH and BNB are recorded as commercial,
+	 * because no code unblocks them" — and it was right when the only path was a
+	 * bill. It is wrong now: there is code to write, and pretending otherwise
+	 * would send the next reader to negotiate a pricing plan that would not open
+	 * these rails. That assertion was replaced deliberately, not relaxed.
+	 *
+	 * THE ORDER OF THE CAUSES IS NOT THE ORDER OF THEIR COST. The cheapest one
+	 * to clear is pasting an xpub into an env file, and it is the one that makes
+	 * the rail LOOK open — derivation needs no key, no ceremony, no second host
+	 * and no human, so one env line turns this process into something that can
+	 * hand a deposit address to every customer on three chains in an instant.
+	 * That is the one-way door in its modern form, and evmrail.ts refuses to
+	 * issue while any requirement is unmet. The gate is in code, not in this
+	 * comment. See EVM_RAIL_REQUIREMENTS, which names these same facts as
+	 * checkable preconditions.
 	 */
 	ETH: {
 		rail: "ETH",
 		causes: [
 			{
-				owner: "commercial",
+				owner: "engineering",
 				evidence:
-					'BitGo 403 on POST /eth/wallet/6b06f02a69a8a28bfecb0ceae9918fd0/address: ' +
-					'"A pricing plan is required to create receive addresses on Wallet ' +
-					'6b06f02a69a8a28bfecb0ceae9918fd0. Contact BitGo support for more ' +
-					'information." The enterprise is on the free "starter" tier and has ' +
-					"never created an EVM receive address (lastChainIndex {\"0\":0,\"1\":-1}).",
+					"The withdrawal half does not exist, and rule 4 makes that a DEPOSIT " +
+					"blocker: nothing signs, submits or books a sweep. EvmRpcAdapter.send " +
+					"is a permanent rejection and probe().canSend is false — correctly, " +
+					"because an xpub cannot sign — so every outbound movement needs the " +
+					"offline signer host, and PayoutRail assumes a SYNCHRONOUS send, which " +
+					"is a different shape and is new code. No proposal has ever been " +
+					"composed, carried, signed or broadcast.",
 				observedAt: "2026-11-26",
 				remedy:
-					"Ask BitGo support which plan enables EVM receive addresses on " +
-					"enterprise 64b1f1c10a11d600077a05b9608555d3 and at what price, then " +
-					"decide whether to buy it. No code change is needed either way. See " +
-					"ops/bitgo-deposit-rails.md.",
+					"Build the APPROVED -> proposal -> signed-blob -> SUBMITTED path: the " +
+					"signer re-derives every source from its OWN seed at the claimed index, " +
+					"checks every destination against an allow-list compiled into the " +
+					"signer, enforces per-batch ceilings and nonce monotonicity, and prints " +
+					"four lines for a human. Without source re-derivation and the " +
+					"allow-list the offline step is theatre. Then a broadcast runner, " +
+					"idempotent per entry, posting BOTH movements of every sweep INCLUDING " +
+					"the gas fee — omitting the fee grows a steady shortfall that halts the " +
+					"asset and would be entirely self-inflicted. Record it in " +
+					"EVM_RAIL_EVIDENCE.",
+			},
+			{
+				owner: "engineering",
+				evidence:
+					"The deposit half is built but unproven in two specific places. " +
+					"EvmNativeScanner has never run a week against live tip, so sustained " +
+					"fitness is unknown — every endpoint measurement behind this rail is a " +
+					"burst of 25 to 30 calls, while a per-block scan is a permanent duty " +
+					"cycle. And no monitor exists OUTSIDE this host re-deriving issued " +
+					"addresses from the xpub: root here needs no key to steal a new " +
+					"customer's first deposit, only the ability to change what that " +
+					"customer is SHOWN, and a keyless design does not close that.",
+				observedAt: "2026-11-26",
+				remedy:
+					"Run the scanner read-only against tip for seven days and alarm on " +
+					"CURSOR LAG, not only on errors — ethereum-rpc.publicnode.com serves " +
+					"logs ~9,700 blocks back and receipts ~20,000, about 32 hours, so a " +
+					"stall that starts Friday and is found Monday is already past " +
+					"backfilling. Then stand up the off-host address monitor and publish " +
+					"the (index, address, xpub fingerprint) triple on the deposit screen so " +
+					"a customer can verify their own address off our infrastructure.",
+			},
+			{
+				owner: "commercial",
+				evidence:
+					"Ethereum's only free endpoint is shallow. ethereum-rpc.publicnode.com " +
+					"prunes state and logs: eth_getLogs serves ~9,687 blocks and ERRORS " +
+					"from ~10,156 back, eth_getBlockReceipts returns null from ~20,000 " +
+					"back, headers exist only from block 15,500,000, and a deep read says " +
+					'"Archive requests require a personal token". It fails LOUDLY, which ' +
+					"is what makes native ETH safe to build on at all — but it leaves about " +
+					"32 hours of repair budget and no contractual rate limit.",
+				observedAt: "2026-11-26",
+				remedy:
+					"Buy one keyed endpoint — an Allnodes personal token works on the SAME " +
+					"hostname already in the config — and note that a credential-only fix " +
+					"is INVISIBLE IN A CODE DIFF, which is why EvmNativeScanner.preflight " +
+					"verifies depth against the live endpoint at startup rather than " +
+					"trusting an invoice. Until then the 32-hour ceiling is the operational " +
+					"constraint and the lag alarm must fire in hours.",
 			},
 		],
 		customer:
-			"ETH deposits are not open yet. Our custodian will not issue a " +
-			"per-customer Ethereum deposit address on our current plan, and we will " +
-			"not hand everyone one shared address — on Ethereum there is no memo or " +
-			"tag, so we could not tell whose money had arrived. We are resolving it " +
-			"with the custodian.",
+			"ETH deposits are not open yet. We are building our own Ethereum deposit " +
+			"addresses rather than renting them, so that the machine facing the " +
+			"internet can create your address without being able to spend from it. " +
+			"Deposits open when we can also pay ETH back out — we do not hold coins " +
+			"we cannot send. We will not hand everyone one shared address either: " +
+			"Ethereum has no memo or tag, so we could not tell whose money had " +
+			"arrived.",
 	},
 	BNB: {
+		/*
+		 * BNB CARRIES ONE EXTRA CAUSE THAT ETH DOES NOT, AND IT IS THE REASON
+		 * BSC STAYS SHUT EVEN AFTER THE ENGINEERING IS DONE.
+		 *
+		 * The per-block receipts-versus-header integrity assertion catches
+		 * BSC's lie on a FORWARD scan. It cannot protect a BACKFILL, and the
+		 * only free independent second source (bsc-dataseed1/2) returns "limit
+		 * exceeded" for eth_getLogs at any range including a single block. So
+		 * there is no way to check a suspect historical range at all. BNB opens
+		 * on a keyed endpoint, not on a cleverer scanner — and that is a
+		 * deliberate refusal of the "open it behind a week of clean
+		 * assertions" option, because a clean week of forward scanning says
+		 * nothing about the day the scanner falls behind.
+		 */
 		rail: "BNB",
 		causes: [
 			{
 				owner: "commercial",
 				evidence:
-					'BitGo 403 on POST /bsc/wallet/6b06f03a03d8f1befe1f4905652c4503/address: ' +
-					'"A pricing plan is required to create receive addresses on Wallet ' +
-					'6b06f03a03d8f1befe1f4905652c4503. Contact BitGo support for more ' +
-					"information.\" Same gate as ETH; Polygon 403s identically, so there " +
-					"is no cheap-EVM escape hatch inside BitGo.",
+					"bsc-rpc.publicnode.com SILENTLY LIES ABOUT ITS OWN HISTORY, measured " +
+					"2026-11-26. eth_getLogs returns HTTP 200 with an empty array past " +
+					"~285,546 blocks (~59.5h, bisected), and eth_getBlockReceipts returns a " +
+					"zero-length array for blocks whose headers report 135 and 85 " +
+					"transactions. The proof it is a lie and not a quiet range: block " +
+					"134,786,112 contains tx 0xddd38fbd1d679586… whose `to` IS the BSC-USDT " +
+					"contract, getLogs for that single block returns n=0, and " +
+					"eth_getTransactionReceipt for that very tx honestly errors \"Archive " +
+					"requests require a personal token\". A scanner more than ~2.5 days " +
+					"behind reads 'no deposits', marks the range clean, advances, and the " +
+					"money is gone with no error in any log.",
 				observedAt: "2026-11-26",
-				remedy: "Same single BitGo conversation as ETH — one plan covers both.",
+				remedy:
+					"Buy a keyed BSC endpoint. Do NOT clear this by pointing at " +
+					"bsc-dataseed1/2 — they are honest for balances and blocks but return " +
+					"'limit exceeded' for eth_getLogs at any range, so they cannot audit a " +
+					"historical window either. EVM_ENDPOINT_DENYLIST refuses both by name, " +
+					"so the rail cannot be opened by re-pointing a URL at what we already " +
+					"have.",
+			},
+			{
+				owner: "engineering",
+				evidence:
+					"Everything in the ETH entry applies unchanged: no signer loop, no " +
+					"broadcast runner, no fee postings, no week of clean scanning and no " +
+					"off-host address monitor. One signer procedure and one runner cover " +
+					"all three EVM chains, because the same secp256k1 account serves all " +
+					"of them — customer N's ETH, BNB and POL deposit address is the SAME " +
+					"address by construction.",
+				observedAt: "2026-11-26",
+				remedy: "Same work as ETH; it is not duplicated per chain.",
 			},
 		],
 		customer:
-			"BNB deposits are not open yet. Our custodian will not issue a " +
-			"per-customer BNB Chain deposit address on our current plan, and we will " +
-			"not hand everyone one shared address — BNB Chain has no memo or tag, so " +
-			"we could not tell whose money had arrived. We are resolving it with the " +
-			"custodian.",
+			"BNB deposits are not open yet. We are building our own BNB Chain deposit " +
+			"addresses rather than renting them, so that the machine facing the " +
+			"internet can create your address without being able to spend from it. " +
+			"BNB Chain also needs a paid data provider before we will trust what we " +
+			"read from it: the free one we have can report an empty history as though " +
+			"nothing had arrived, and we will not run a deposit rail on that. We will " +
+			"not use one shared address either — BNB Chain has no memo or tag, so we " +
+			"could not tell whose money had arrived.",
 	},
 
 	/*
-	 * SOL: TWO CAUSES, AND THE SECOND ONE IS OURS.
+	 * SOL: FOUR CAUSES, AND THE CUSTODY MODEL UNDER THEM HAS CHANGED.
 	 *
-	 * Cause 1 is cheap and the operator's: a Solana account does not exist
-	 * until it is rent-funded, so BitGo answers the address POST with HTTP 202
-	 * and `{"error":"wallet pending on-chain initialization"}` and no address.
-	 * 202 is a success status, which is why this read for a while as "BitGo
-	 * returned a blank". See SOL_ACTIVATION for the exact figures.
+	 * WHAT THIS ENTRY USED TO SAY, AND WHY IT NO LONGER DOES. It recorded two
+	 * BitGo facts: the SOL wallet answers the address POST with HTTP 202 and
+	 * `{"error":"wallet pending on-chain initialization"}` until it is
+	 * rent-funded (SOL_ACTIVATION still holds those figures, and they are still
+	 * accurate), and this service had no consolidation code at all. Both were
+	 * true. Neither is the reason the rail is shut any more, because SOL is no
+	 * longer going to BitGo: SOL is now a SELF-CUSTODIED rail built on an
+	 * address pool (soladdresspool.ts) and an offline signer, for the same
+	 * reason BLOCK is — ed25519 under SLIP-0010 has no watch-only derivation,
+	 * so deriving an address IS holding the key that spends it, and the
+	 * internet-facing host must not hold that.
 	 *
-	 * Cause 2 is the one that must not be forgotten the moment cause 1 clears.
-	 * Solana is an account-per-address model: a deposit to a per-customer
-	 * receive address sits in THAT account, not in a pooled balance, and
-	 * getting it out needs an explicit consolidation (BitGo documents Solana as
-	 * manual consolidation, fees paid in SOL by each receive address, up to 25
-	 * owner addresses per transaction). This service has no consolidation code
-	 * — `grep -n consolidat src/` finds comments and no call site — so an
-	 * activated wallet would take deposits it cannot send back, and
-	 * `BitGoHoldings.holdings` may read those per-account balances as a
-	 * SHORTFALL rather than as custody.
+	 * THE SECOND OLD CAUSE WOULD NOW BE A LIE, WHICH IS WHY IT IS REWRITTEN
+	 * RATHER THAN LEFT ALONE. `grep -n consolidat src/` no longer "returns
+	 * comments and no call site": solconsolidation.ts exists, plans batched
+	 * sweep-to-close transactions, declares a dust floor, and records the
+	 * accounts it refuses to sweep. A blocker that describes code which has
+	 * since been written is a record nobody can trust, and it was true in the
+	 * safe direction only by luck. What is STILL missing is everything between
+	 * a plan and a confirmed transaction — a signer, a broadcast runner, ledger
+	 * postings — plus the chain reads the deposit half needs.
 	 *
-	 * Activation alone therefore must NOT open this rail, and because the rail
-	 * is shut while any cause remains, it cannot.
+	 * THE ORDER OF THESE CAUSES IS NOT THE ORDER OF THEIR COST. The cheapest
+	 * one to clear (load a pool batch) is the one that makes the rail LOOK
+	 * open, because a loaded pool can issue addresses immediately. That is the
+	 * one-way door in its modern form, and solrail.ts refuses to start if this
+	 * entry is emptied while the rail is still unready — the gate is in code,
+	 * not in this comment. See SOL_RAIL_REQUIREMENTS, which names the same
+	 * facts as checkable preconditions.
 	 */
 	SOL: {
 		rail: "SOL",
 		causes: [
 			{
-				owner: "operator",
+				owner: "engineering",
 				evidence:
-					"BitGo 202 on POST /sol/wallet/6b06f0530242e6aa1edd125b16f521fe/address " +
-					'with {"error":"wallet pending on-chain initialization"} and no address. ' +
-					"GET on the same wallet confirms coinSpecific.pendingChainInitialization " +
-					"true, minimumFunding 2447136 lamports, balance 0, lastChainIndex " +
-					'{"0":0,"1":-1}. No SOL wallet anywhere on the enterprise is initialised, ' +
-					"so this cannot be tested for free.",
+					"The withdrawal half stops at a plan. solconsolidation.ts composes " +
+					"UNSIGNED sweep batches (8 sources per transaction, fee payer = the hot " +
+					"account, amount = the full balance so the account closes), and nothing " +
+					"signs, submits or books them. PayoutRail assumes a synchronous send, " +
+					"so an offline signer is a different shape and is new code. Sweep-to- " +
+					"close itself is unverified by us: `getMinimumBalanceForRentExemption(0)` " +
+					"= 650240 lamports is measured on three endpoints, but that a " +
+					"full-balance transfer closes a 0-byte account and recovers every " +
+					"lamport is documented behaviour we have not reproduced, because the " +
+					"work that designed this rail was not permitted to submit a transaction.",
 				observedAt: "2026-11-26",
 				remedy:
-					`Send ${SOL_ACTIVATION.recommendedLamports} lamports (0.01 SOL) to ` +
-					`${SOL_ACTIVATION.rootAddress}, the wallet's own root address, then run ` +
-					"ops/activate-sol-wallet.sh to verify. ~$2 at any plausible price.",
+					"Demonstrate sweep-to-close on devnet (full-balance transfer closes the " +
+					"account; a partial sweep leaving under 650240 lamports fails for rent), " +
+					"then once with a real small amount on mainnet, then build the broadcast " +
+					"runner — idempotent on the batch's proposalKey, and posting BOTH " +
+					"movements of every sweep including the fee, or reconciliation grows a " +
+					"shortfall that halts the asset. Record the result in SOL_RAIL_EVIDENCE.",
 			},
 			{
 				owner: "engineering",
 				evidence:
-					"No consolidation path exists: `grep -n consolidat src/` returns " +
-					"comments and no call site. Solana credits each receive address's own " +
-					"account, so pooled withdrawal and reconciliation both assume something " +
-					"that is not true on this chain.",
+					"The deposit half does not exist. There is no SOL ChainAdapter: nothing " +
+					"reads a balance, nothing attributes an arrival, and a balance delta " +
+					"carries no transaction signature — which IncomingPayment.txid requires " +
+					"and idempotency depends on. Crediting an unattributed delta would break " +
+					"'credited exactly once' on the first day.",
 				observedAt: "2026-11-26",
 				remedy:
-					"Build the Solana consolidation path (POST /api/v2/sol/wallet/{id}/" +
-					"consolidateAccount/build, <=25 owner addresses per transaction), declare " +
-					"a minimum SOL deposit above the per-account rent floor, and settle " +
-					"whether BitGoHoldings reads receive-address balances or only the root. " +
-					"Until then an activated wallet is a one-way door.",
+					"Build the scanner: getMultipleAccounts over ISSUED pool addresses only, " +
+					"at `finalized` commitment pinned to a slot, with getSignaturesForAddress " +
+					"used solely to attribute a detected delta to a signature, every history " +
+					"read gated on resumeSlot >= getFirstAvailableBlock() and halting " +
+					"otherwise. A delta with no attributed signature is recorded unreadable " +
+					"and credits nothing.",
+			},
+			{
+				owner: "commercial",
+				evidence:
+					"No Solana endpoint we have can carry a deposit rail, measured " +
+					"2026-11-26. solana-rpc.publicnode.com silently truncates its signature " +
+					"index to ~2.5 days — n=3 at HTTP 200 for an account where " +
+					"api.mainnet-beta returns n=1000, and getTransaction returns null rather " +
+					"than an error at 17.9d/68.5d/150.7d/160.5d — and caps " +
+					"getMultipleAccounts at 10 accounts, i.e. 100 round trips per pass over " +
+					"a 1000-address pool. api.mainnet-beta accepts 100 accounts but returned " +
+					"HTTP 429 on 11 of 25 burst calls. Our own /account/api/sol/rpc relay " +
+					"inherits publicnode (SOLANA_RPC is unset) AND sits behind the shared " +
+					"login limiter, where a polling scanner could lock real users out.",
+				observedAt: "2026-11-26",
+				remedy:
+					"Buy one keyed Solana endpoint and set CHAIN_SOL_URL to it. " +
+					"SOL_ENDPOINT_DENYLIST in solrail.ts refuses the three unsafe ones by " +
+					"name, so this cannot be cleared by pointing at what we already have.",
+			},
+			{
+				owner: "operator",
+				evidence:
+					"sol_address_pool is empty and there is no signer-host procedure: no " +
+					"batch has been derived from m/44'/501'/i'/0', and no compiled " +
+					"hot-address allow-list exists for the host that would sign sweeps. " +
+					"Without source re-derivation and that allow-list the offline step is " +
+					"theatre — a compromised exchange host would simply propose a sweep of " +
+					"every customer account to the attacker's address.",
+				observedAt: "2026-11-26",
+				remedy:
+					"Stand the SOL signer host up alongside the BLOCK wallet host that " +
+					"already runs this procedure, derive a batch, compare its SHA-256 by " +
+					"eye, and load it with `node dist/src/solpoolcli.js --from batch.json`. " +
+					`Publish the ${SOL_MINIMUM_DEPOSIT_LAMPORTS} lamport minimum deposit ` +
+					`(derived from the ${SOL_SWEEP_DUST_FLOOR_LAMPORTS} lamport dust floor) ` +
+					"on the deposit screen at the same time.",
 			},
 		],
 		customer:
-			"SOL deposits are not open yet. Our Solana custody wallet needs a one-off " +
-			"on-chain activation payment, and we will not open deposits until we can " +
-			"also pay SOL back out — we do not hold coins we cannot send.",
+			"SOL deposits are not open yet. We are building our own Solana deposit " +
+			"addresses rather than renting them, because on Solana the ability to " +
+			"create an address is the ability to spend from it, and that must not sit " +
+			"on an internet-facing machine. Deposits open when we can also pay SOL " +
+			"back out — we do not hold coins we cannot send.",
 	},
 };
 

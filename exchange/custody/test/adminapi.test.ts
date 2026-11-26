@@ -21,10 +21,11 @@ import { BlockleAuth } from "../src/blockleauth";
 import { LIVE_GAS_COSTS } from "../src/gasgate";
 import { GAS_PRICE_FLOOR, StaticRates } from "../src/gasrates";
 import { Customers } from "../src/customers";
-import { Ledger } from "../src/ledger";
+import { AccountKind, Ledger, Reason } from "../src/ledger";
 import { currentCode, generateSecret } from "../src/totp";
 import { LIVE_FEES, type GasPricing } from "../src/withdrawalfees";
 import { fundGasFloat } from "../src/revenue";
+import type { ReconcilerState, ReservationSource } from "../src/treasury";
 
 const SECRET = generateSecret();
 
@@ -77,6 +78,8 @@ async function call(
 		ledger?: Ledger;
 		db?: Database.Database;
 		adminId?: string;
+		reservations?: ReservationSource;
+		reconciler?: ReconcilerState;
 	} = {},
 ): Promise<Captured> {
 	const adminId = opts.adminId ?? ADMIN_ID;
@@ -97,6 +100,19 @@ async function call(
 		customers: new Customers(db, ledger),
 		totpSecrets: opts.secrets ?? { [adminId]: SECRET },
 		houseAccountId: "house",
+		// NO RESERVATIONS AND NO RECONCILER PASS, by default. A test double that
+		// invented a halt set would make the treasury route look verified; this
+		// one is honest about having checked nothing, which is also the state a
+		// freshly-installed box is in.
+		reservations: opts.reservations ?? {
+			reservationsByAsset: () => ({ byAsset: new Map(), skipped: 0 }),
+		},
+		reconcilerState: () =>
+			opts.reconciler ?? {
+				halted: {},
+				lastPassAt: undefined,
+				unavailableReason: "no halt file in this test",
+			},
 	};
 
 	const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
@@ -374,4 +390,170 @@ test("the config parsers treat absent configuration as empty, not as a wildcard"
 	// A malformed entry is dropped rather than producing an empty secret, which
 	// would read as "enrolled" while accepting nothing.
 	assert.deepEqual(totpSecretsFrom("id1=ABC, broken, id2="), { id1: "ABC" });
+});
+
+// -----------------------------------------------------------------------------
+// THE TREASURY ROUTES.
+//
+// The treasury view shows every customer's balance in one response, which
+// makes it the most sensitive read in the product. The only question these
+// tests ask of the ROUTE (treasury.test.ts tests the arithmetic) is who it
+// refuses, and that it refuses them in the same way and with the same wording
+// as everything else here — because a new endpoint that answers 403 where its
+// neighbours answer 404 is itself a disclosure.
+// -----------------------------------------------------------------------------
+
+test("THE TREASURY VIEW REFUSES AN UNAUTHENTICATED CALLER", async () => {
+	for (const path of [
+		"/admin/api/treasury",
+		"/admin/api/treasury/BTC/customers",
+	]) {
+		const r = await call("GET", path, { signedInAs: undefined });
+		assert.equal(r.status, 401, path);
+		// Nothing about assets, balances or customers in the refusal body.
+		assert.doesNotMatch(JSON.stringify(r.body), /custody|balance|holder/i, path);
+	}
+});
+
+test("THE TREASURY VIEW REFUSES A SIGNED-IN NON-ADMIN WITH 404, NOT 403", async () => {
+	// Same answer a nonexistent route gives. A 403 would confirm that a
+	// treasury endpoint exists and that this account is merely not on the list,
+	// which tells an attacker where to point a stolen cookie next.
+	for (const path of [
+		"/admin/api/treasury",
+		"/admin/api/treasury/BTC/customers",
+	]) {
+		const r = await call("GET", path, {
+			signedInAs: "acct_customer",
+			allowlist: [ADMIN_ID],
+		});
+		assert.equal(r.status, 404, path);
+		assert.equal(r.body.error, "not found", path);
+	}
+});
+
+test("an unconfigured allowlist admits nobody to the treasury view either", async () => {
+	const r = await call("GET", "/admin/api/treasury", { allowlist: [] });
+	assert.equal(r.status, 503);
+	assert.match(String(r.body.error), /nobody is an administrator/);
+});
+
+test("an operator reads the treasury view with a session and no code", async () => {
+	// Consistent with every other read here: reads need the session and the
+	// allowlist, not an authenticator code.
+	const r = await call("GET", "/admin/api/treasury");
+	assert.equal(r.status, 200, JSON.stringify(r.body));
+	const assets = r.body.assets as Array<Record<string, unknown>>;
+	// Every registry asset is present, including the empty rails — an operator
+	// needs to see that a rail is empty, which is not the same as missing.
+	assert.ok(assets.length >= 14, `only ${assets.length} assets`);
+	assert.ok(assets.some((a) => a.asset === "BLOCK"));
+	assert.equal(r.body.booksBalance, true);
+	// Not cached, and not shareable.
+	assert.match(r.headers["cache-control"] ?? "", /no-store/);
+	assert.match(r.headers["cache-control"] ?? "", /private/);
+	// AND NO CORS HEADER. publicapi.ts's `json()` helper sends
+	// `Access-Control-Allow-Origin: *` on every response it writes; the admin
+	// surface uses its own `send()` and must never acquire one, or a page on
+	// any origin could read every customer's balance out of a logged-in
+	// operator's browser.
+	assert.equal(r.headers["Access-Control-Allow-Origin"], undefined);
+	assert.equal(r.headers["access-control-allow-origin"], undefined);
+});
+
+test("an operator reads the per-asset drill-down with a session and no code", async () => {
+	const r = await call("GET", "/admin/api/treasury/BTC/customers");
+	assert.equal(r.status, 200, JSON.stringify(r.body));
+	assert.equal(r.body.asset, "BTC");
+	assert.deepEqual(r.body.holders, []);
+	assert.equal(r.body.agrees, true);
+});
+
+test("the drill-down's asset is bounded by the route pattern, not by the handler", async () => {
+	/*
+	 * A path that is not a short uppercase token never reaches the query at
+	 * all: no stray character, no over-long symbol, no extra segment.
+	 *
+	 * `/treasury/../customers` is deliberately NOT in this list, and it is
+	 * worth saying why rather than leaving someone to add it. `new URL()`
+	 * resolves the `..` before `adminRoute` ever sees a pathname, so that
+	 * request arrives as `/admin/api/customers` and is answered by the
+	 * customer directory — which sits behind the same operator allowlist, so
+	 * nothing is bypassed. Asserting a 404 there would be asserting a fact
+	 * about URL normalisation, and it would start failing the day the
+	 * directory route was renamed.
+	 */
+	for (const bad of [
+		"/admin/api/treasury/BTC%20ETH/customers",
+		"/admin/api/treasury/ThisAssetSymbolIsFarTooLongToBeReal/customers",
+		"/admin/api/treasury/BTC/customers/extra",
+	]) {
+		const r = await call("GET", bad);
+		assert.equal(r.status, 404, `${bad} -> ${JSON.stringify(r.body)}`);
+	}
+});
+
+test("THE TREASURY ROUTES ARE READ-ONLY: A POST IS NOT A ROUTE", async () => {
+	// There is deliberately no mutating treasury endpoint. Freezing or
+	// crediting an account needs its own code-gated action and its own audit
+	// row; putting one on the screen an operator refreshes during an incident
+	// is how a mis-click becomes a loss.
+	for (const path of [
+		"/admin/api/treasury",
+		"/admin/api/treasury/BTC/customers",
+	]) {
+		const r = await call("POST", path, { code: currentCode(SECRET), body: {} });
+		assert.equal(r.status, 404, path);
+	}
+});
+
+test("NO CUSTOMER IDENTIFIER REACHES A LOG LINE THROUGH THE ROUTE", async () => {
+	/*
+	 * treasury.test.ts asserts this of the module; this asserts it of the
+	 * HTTP path, which is where the logging in this service actually happens
+	 * (publicapi.ts prints a raw account id on its deposit-address routes, so
+	 * the mistake is one already made next door rather than a hypothetical).
+	 *
+	 * Every console method is captured, because a console.error on a failure
+	 * path leaks exactly as much as a console.log on a happy one and systemd
+	 * puts both in the same journal.
+	 */
+	const SECRET_ID = "acct_zzz_distinctive_9f3a2b";
+	const db = new Database(":memory:");
+	const ledger = new Ledger(db);
+	ledger.post({
+		reason: Reason.DEPOSIT,
+		postings: [
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "BTC" }, delta: -500n },
+			{ account: { kind: AccountKind.CUSTODY, owner: "", asset: "BTC" }, delta: 500n },
+			{ account: { kind: AccountKind.USER, owner: SECRET_ID, asset: "BTC" }, delta: 500n },
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "BTC" }, delta: -500n },
+		],
+		idempotencyKey: "dep:1",
+		actor: "test",
+	});
+
+	const captured: string[] = [];
+	const methods = ["log", "info", "warn", "error", "debug", "trace"] as const;
+	const saved = methods.map((m) => console[m]);
+	for (const m of methods) {
+		console[m] = (...args: unknown[]): void => {
+			captured.push(args.map((a) => String(a)).join(" "));
+		};
+	}
+	let body: Record<string, unknown>;
+	try {
+		const r = await call("GET", "/admin/api/treasury/BTC/customers", { db, ledger });
+		assert.equal(r.status, 200);
+		body = r.body;
+	} finally {
+		methods.forEach((m, i) => {
+			console[m] = saved[i]!;
+		});
+	}
+
+	// The id really was returned in the BODY — otherwise "nothing was logged"
+	// would be trivially true of a route that read nothing.
+	assert.match(JSON.stringify(body), new RegExp(SECRET_ID));
+	assert.deepEqual(captured, [], `logged: ${captured.join(" | ")}`);
 });

@@ -215,18 +215,86 @@ test("SOL keeps BOTH causes, so funding alone cannot open the rail", () => {
 	);
 });
 
-test("ETH and BNB are recorded as commercial, because no code unblocks them", () => {
+/*
+ * THIS TEST REPLACES ONE THAT ASSERTED THE OPPOSITE, AND THE REPLACEMENT IS
+ * DELIBERATE.
+ *
+ * It used to read "ETH and BNB are recorded as commercial, because no code
+ * unblocks them", and it asserted that the ONLY owner on either rail was
+ * `commercial`. That was correct while the only path to an EVM deposit address
+ * was BitGo's pricing plan: an engineering cause would have sent somebody to
+ * write code for a 403 that says "a pricing plan is required", which no code
+ * can answer.
+ *
+ * The premise changed. These are self-custodied xpub rails now, so there IS
+ * code to write — a signer loop, a broadcast runner, fee postings, an off-host
+ * address monitor — and a table claiming otherwise would send the next reader
+ * to negotiate a plan that would not open the rail. Keeping the old assertion
+ * would have made the honest table fail the suite, which is precisely the
+ * pressure that gets a comment quietly corrected into a lie.
+ *
+ * What is asserted instead is the property that still matters: BOTH halves are
+ * named, and the WITHDRAWAL half is present. Rule 4 ties them together — a
+ * deposits-open/withdrawals-broken rail is the worst state available — so a
+ * blocker set that mentioned only deposit-side work would be the dangerous
+ * shape, because clearing it would open deposits with no way to pay out.
+ */
+test("ETH and BNB name engineering work, and never only the deposit half", () => {
 	for (const rail of ["ETH", "BNB"] as const) {
 		const b = RAIL_BLOCKERS[rail];
 		assert.ok(b !== undefined, `${rail} is no longer recorded as blocked`);
-		assert.deepEqual(
-			[...new Set(b.causes.map((c) => c.owner))],
-			["commercial"],
-			`${rail} must be owned purely by the commercial decision. An ` +
-				"engineering cause here would send someone to write code for a " +
-				"403 that says \"a pricing plan is required\".",
+
+		const owners = new Set(b.causes.map((c) => c.owner));
+		assert.ok(
+			owners.has("engineering"),
+			`${rail} must carry an engineering cause: these rails are ours now, and ` +
+				"the signer loop, broadcast runner and fee postings are code nobody has " +
+				"written. A purely commercial blocker would read as 'send money, get a " +
+				"rail'.",
 		);
+
+		/*
+		 * The withdrawal half has to be visible in the evidence a human reads,
+		 * not only in evmrail.ts's requirement list. Somebody deciding whether
+		 * to open this rail reads THIS table.
+		 */
+		const text = b.causes.map((c) => `${c.evidence} ${c.remedy}`).join(" ").toLowerCase();
+		for (const needle of ["signer", "broadcast"]) {
+			assert.ok(
+				text.includes(needle),
+				`${rail}'s causes never mention "${needle}". The outbound path is what ` +
+					"rule 4 makes a deposit blocker; a blocker that only describes " +
+					"deposit-side work can be cleared into exactly the state that rule " +
+					"forbids.",
+			);
+		}
 	}
+});
+
+/*
+ * THE BITGO MEASUREMENT MUST NOT VANISH JUST BECAUSE IT STOPPED BEING THE
+ * BLOCKER.
+ *
+ * The 403 and the "starter" tier are still true, still measured, and still the
+ * reason the venue builds its own EVM rails rather than renting them. If the
+ * record of WHY disappears, the next person to hit a delay re-opens the BitGo
+ * conversation as though it were the cheap option, buys a plan, and discovers
+ * it opens nothing, because the rail is now gated on a signer host and a keyed
+ * endpoint instead.
+ */
+test("the superseded BitGo pricing finding survives as recorded context", () => {
+	const eth = RAIL_BLOCKERS.ETH;
+	assert.ok(eth !== undefined);
+	const haystack =
+		eth.causes.map((c) => c.evidence).join(" ") +
+		" " +
+		readFileSync(join(SRC, "settlement.ts"), "utf8");
+	assert.ok(
+		/pricing plan is required/.test(haystack),
+		"the BitGo 403 wording is no longer recorded anywhere in settlement.ts. It " +
+			"is the reason these rails are self-custodied; losing it invites someone " +
+			"to buy a plan that would not open them.",
+	);
 });
 
 test("a blocked rail is never also recorded as proven", () => {

@@ -86,6 +86,14 @@ export const SCOPES: readonly Scope[] = ["read", "trade"];
 /** How far a request's timestamp may be from ours. */
 export const SKEW_MS = 30_000;
 
+/**
+ * THE PER-KEY RATE-LIMIT WINDOW. A key's allowance is "N requests in this
+ * rolling window", so this is also the longest a throttled caller can have to
+ * wait for capacity — which is why publicapi.ts derives the `Retry-After` it
+ * sends on a 429 from here instead of typing a number beside it.
+ */
+export const KEY_RATE_WINDOW_MS = 60_000;
+
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS api_key (
   -- Public half. Sent in the clear on every request.
@@ -406,9 +414,14 @@ export class ApiKeys {
 			);
 		}
 
-		// Per-key rate limit.
-		const window = 60_000;
-		const arr = (this.hits.get(args.keyId) ?? []).filter((t) => now - t < window);
+		// Per-key rate limit, over KEY_RATE_WINDOW_MS. The constant is exported
+		// because the Retry-After this service sends on a 429 is derived from it
+		// (publicapi.ts, RETRY_AFTER_SECONDS) — a hard-coded wait published next
+		// to a window that later changed would teach every client to retry at
+		// the wrong moment.
+		const arr = (this.hits.get(args.keyId) ?? []).filter(
+			(t) => now - t < KEY_RATE_WINDOW_MS,
+		);
 		if (arr.length >= row.rate_per_min) {
 			arr.push(now);
 			this.hits.set(args.keyId, arr);

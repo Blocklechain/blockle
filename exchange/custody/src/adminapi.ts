@@ -1,12 +1,14 @@
 // -----------------------------------------------------------------------------
 // ADMIN API — the operator's view, and the only place money moves by hand.
 //
-// WHAT IT IS FOR. Three questions an operator has to be able to answer without
+// WHAT IT IS FOR. Four questions an operator has to be able to answer without
 // opening a database:
 //
-//   1. How much have we made? (revenue.ts)
-//   2. Can we still pay gas? (gasgate.ts)
-//   3. Is every chain's fee actually covering its gas? (withdrawalfees.ts)
+//   1. Is the venue solvent? (treasury.ts — and it is listed first because it
+//      is the only one of these whose wrong answer ends the company)
+//   2. How much have we made? (revenue.ts)
+//   3. Can we still pay gas? (gasgate.ts)
+//   4. Is every chain's fee actually covering its gas? (withdrawalfees.ts)
 //
 // And two actions: sweep accrued revenue somewhere spendable, and top up a gas
 // float.
@@ -52,6 +54,12 @@ import type { Customers } from "./customers";
 import { AccountKind, type Ledger } from "./ledger";
 import { estimateTotal, fundGasFloat, revenue, sweep } from "./revenue";
 import { TotpVerifier } from "./totp";
+import {
+	treasury,
+	treasuryHolders,
+	type ReconcilerState,
+	type ReservationSource,
+} from "./treasury";
 import { auditGasCoverage, type FeeTable, type GasPricing } from "./withdrawalfees";
 import { AuthError, type BlockleAuth, type BlockleUser } from "./blockleauth";
 
@@ -112,6 +120,32 @@ export interface AdminDeps {
 	readonly totpSecrets: Readonly<Record<string, string>>;
 	/** The account revenue sweeps are paid into. */
 	readonly houseAccountId: string;
+	/**
+	 * Where the treasury view reads reservations from — in the service, the
+	 * live `Venue`.
+	 *
+	 * WHY THE ADMIN SURFACE NEEDS THIS AT ALL. A reservation is derived from
+	 * the order table, not from ledger postings, so it is the one figure on
+	 * the treasury screen that the hash chain cannot vouch for and the one the
+	 * ledger alone cannot produce. Without it the panel could show what a
+	 * customer is owed but not how much of it they have already committed to
+	 * resting orders — i.e. it could not show what is actually withdrawable,
+	 * which is the number a support question is usually about.
+	 *
+	 * It is the INTERFACE and not the Venue itself, so the admin surface gains
+	 * a read and not the ability to place or cancel an order.
+	 */
+	readonly reservations: ReservationSource;
+	/**
+	 * The reconcile job's last verdict, read fresh per request.
+	 *
+	 * A FUNCTION, NOT A VALUE. The job rewrites the halt file every two
+	 * minutes; a value captured at process start would pin the treasury panel
+	 * to whatever was true when the service last restarted, and the staleness
+	 * would be invisible precisely because the page would still render a
+	 * timestamp — just an old one, labelled as if it were current.
+	 */
+	readonly reconcilerState: () => ReconcilerState;
 }
 
 const totp = new TotpVerifier();
@@ -362,6 +396,74 @@ export async function adminRoute(
 					takerBps: DEFAULT_FEES.takerBps,
 				},
 			});
+			return true;
+		}
+
+		/*
+		 * THE TREASURY VIEW. The only screen that can say the venue is in
+		 * trouble, and therefore the one that must not be able to cause it.
+		 *
+		 * READ-ONLY AND CUSTODIAN-FREE BY CONSTRUCTION. It holds a Ledger, a
+		 * reservations reader and the reconcile job's halt file; it holds no
+		 * BitGo client, no rate source and no writable path. So it cannot move
+		 * funds, cannot provision an address (a previous agent POSTed a
+		 * receive address onto the live LTC wallet while doing read-shaped
+		 * work), and cannot acquire a fiat figure for BLOCK by conversion —
+		 * the one in /revenue above arrives via estimateTotal(..., "USDT"),
+		 * and nothing on this path imports a rate at all.
+		 *
+		 * NO TOTP. Consistent with every other read here: reads need the
+		 * session and the allowlist, not a code. It IS the most sensitive read
+		 * in the venue, so the argument for a code is real — but a code on a
+		 * screen an operator refreshes during an incident is a code they will
+		 * paste into something, and the allowlist plus a browser-session-only
+		 * cookie is the control that is actually load-bearing here.
+		 */
+		if (p === "/treasury" && req.method === "GET") {
+			send(
+				res,
+				200,
+				await treasury({
+					ledger: deps.ledger,
+					reservations: deps.reservations,
+					reconciler: deps.reconcilerState(),
+				}),
+			);
+			return true;
+		}
+
+		/*
+		 * PER-ASSET DRILL-DOWN: EVERY CUSTOMER'S POSITION IN ONE ASSET.
+		 *
+		 * The asset is in the path and the customers are in the body, which is
+		 * the right way round for this: it means no request to this endpoint
+		 * ever CARRIES a customer identifier, so an access log, a proxy log or
+		 * an nginx error page cannot record one. The same information shaped as
+		 * `?account=` would have leaked an id into every one of those by
+		 * default, and nothing would have warned anybody.
+		 *
+		 * The asset is bounded to a short uppercase token by the pattern rather
+		 * than validated inside the handler, so an unexpected path cannot reach
+		 * the query at all.
+		 */
+		const drill = /^\/treasury\/([A-Z0-9]{1,16})\/customers$/.exec(p);
+		if (drill !== null && req.method === "GET") {
+			const limit = Number(url.searchParams.get("limit") ?? "100");
+			const offset = Number(url.searchParams.get("offset") ?? "0");
+			send(
+				res,
+				200,
+				treasuryHolders({
+					ledger: deps.ledger,
+					reservations: deps.reservations,
+					asset: drill[1]!,
+					// Bounds are applied inside treasuryHolders, which clamps
+					// rather than trusts — see the comment there on why the
+					// older /customers route's unbounded `limit` is not copied.
+					limit,
+					offset,
+				}),
+			);
 			return true;
 		}
 

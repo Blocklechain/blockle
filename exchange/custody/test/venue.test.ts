@@ -572,3 +572,80 @@ test("A MAKER WHO CANNOT DELIVER IS CANCELLED, AND THE TAKER STILL TRADES", () =
 	assert.equal(v.order(badOrder.order.id)?.state, "cancelled");
 	void db;
 });
+
+test("RESERVATIONS BY ASSET AGREE WITH THE PER-ACCOUNT FIGURE THE VENUE ENFORCES", async () => {
+	/*
+	 * `reserved(accountId)` is what `placeOrder` and the withdrawal path check
+	 * against; `reservationsByAsset()` is what the operator treasury view
+	 * displays. They share `reservationOf`, and this is the assertion that
+	 * keeps them sharing it.
+	 *
+	 * The failure this guards against is not a crash. It is an operator
+	 * console telling someone an account has 3 BTC available while
+	 * `POST /v1/withdrawals` refuses on 2 — a support conversation nobody can
+	 * win, because both numbers come from the venue and only one of them is
+	 * the one that decides.
+	 *
+	 * Both sides of the book are exercised: a resting SELL claims base, a
+	 * resting BUY claims quote at its own limit price. A view that only ever
+	 * tested sells would miss the quoteFor() scaling entirely, and that
+	 * arithmetic is where the price-decimals mispricing lived.
+	 */
+	const { l, v } = setup();
+	const seller = actor(v, "s@x.test", "5");
+	const buyer = actor(v, "b@x.test", "0", "200000");
+
+	v.placeOrder({
+		accountId: seller,
+		market: "BTC-USDT",
+		side: "sell",
+		price: parse("60000", USDT),
+		baseAmount: parse("2", BTC),
+	});
+	v.placeOrder({
+		accountId: buyer,
+		market: "BTC-USDT",
+		side: "buy",
+		price: parse("50000", USDT),
+		baseAmount: parse("1", BTC),
+	});
+
+	const { byAsset, skipped } = v.reservationsByAsset();
+	assert.equal(skipped, 0, "every open order is on a listed market here");
+
+	// Per account, both ways round, for every asset either view mentions.
+	for (const who of [seller, buyer]) {
+		const perAccount = v.reserved(who);
+		for (const [asset, expected] of perAccount) {
+			assert.equal(
+				byAsset.get(asset)?.get(who) ?? 0n,
+				expected,
+				`${asset}: the venue-wide view must match reserved(${who === seller ? "seller" : "buyer"})`,
+			);
+		}
+		for (const [asset, per] of byAsset) {
+			assert.equal(
+				per.get(who) ?? 0n,
+				perAccount.get(asset) ?? 0n,
+				`${asset}: and in the other direction`,
+			);
+		}
+	}
+
+	// The figures themselves, worked out by hand: the seller's 2 unfilled BTC,
+	// and the buyer's 1 BTC at 50,000 = 50,000 USDT of quote.
+	assert.equal(byAsset.get("BTC")?.get(seller), parse("2", BTC));
+	assert.equal(byAsset.get("USDT")?.get(buyer), parse("50000", USDT));
+
+	// The venue-wide total per asset is the sum of its accounts' claims.
+	let btc = 0n;
+	for (const amount of byAsset.get("BTC")!.values()) btc += amount;
+	assert.equal(btc, parse("2", BTC));
+
+	// And `balances()`, which the customer sees, is still derived from the
+	// per-account call rather than from this one.
+	const sellerBtc = v.balances(seller).find((b) => b.asset === "BTC")!;
+	assert.equal(sellerBtc.reserved, parse("2", BTC));
+	assert.equal(sellerBtc.available, parse("3", BTC));
+	assertSolvent(l, ["BTC", "USDT"]);
+});

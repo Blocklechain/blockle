@@ -54,28 +54,52 @@ function rpcErrStub(method: string, code: number, message: string): typeof fetch
 	}) as unknown as typeof fetch;
 }
 
-/** A fetch that answers from a table of method -> result (or a thrower). */
+/**
+ * A fetch that answers from a table of method -> result (or a thrower).
+ *
+ * IT ANSWERS BATCHES AS WELL AS SINGLE CALLS, and that is not a convenience —
+ * it is what keeps these tests honest about the code they exercise. The EVM
+ * reconciliation read is BATCHED (one HTTP request, N results, matched by id)
+ * because it has to read one balance per customer address, and a stub that
+ * only understood single calls would have forced the adapter to stay serial to
+ * remain testable. Replies are emitted in REVERSE request order on purpose:
+ * JSON-RPC 2.0 explicitly permits any order, some providers use it, and
+ * `JsonRpc.batch` matches by id for exactly that reason. A stub that always
+ * replied in order would let a positional-read regression — which silently
+ * attributes one customer's balance to another, while the SUM stays right —
+ * pass every test here.
+ */
 function rpcStub(
 	answers: Record<string, unknown | (() => unknown)>,
 	seen?: Array<{ method: string; params: unknown }>,
 ): typeof fetch {
-	return (async (_url: string, init?: RequestInit) => {
-		const body = JSON.parse(String(init?.body)) as { method: string; params: unknown };
-		seen?.push({ method: body.method, params: body.params });
-		if (!(body.method in answers)) {
-			return new Response(
-				JSON.stringify({ error: { message: `Method not found: ${body.method}` } }),
-				{ status: 200 },
-			);
+	const answerOne = (
+		call: { method: string; params: unknown; id?: unknown },
+	): Record<string, unknown> => {
+		seen?.push({ method: call.method, params: call.params });
+		const envelope = { jsonrpc: "2.0", id: call.id };
+		if (!(call.method in answers)) {
+			return { ...envelope, error: { message: `Method not found: ${call.method}` } };
 		}
-		const a = answers[body.method];
+		const a = answers[call.method];
 		const value = typeof a === "function" ? (a as () => unknown)() : a;
-		if (value instanceof Error) {
-			return new Response(JSON.stringify({ error: { message: value.message } }), {
-				status: 200,
-			});
+		if (value instanceof Error) return { ...envelope, error: { message: value.message } };
+		return { ...envelope, result: value };
+	};
+
+	return (async (_url: string, init?: RequestInit) => {
+		const body = JSON.parse(String(init?.body)) as
+			| { method: string; params: unknown; id?: unknown }
+			| Array<{ method: string; params: unknown; id?: unknown }>;
+		if (Array.isArray(body)) {
+			const replies = body.map(answerOne).reverse();
+			return new Response(JSON.stringify(replies), { status: 200 });
 		}
-		return new Response(JSON.stringify({ result: value }), { status: 200 });
+		const one = answerOne(body);
+		// Single-call replies keep the old shape exactly: `call()` reads
+		// `result`/`error` and ignores the id, and every bitcoind-family test
+		// below depends on that having not changed.
+		return new Response(JSON.stringify(one), { status: 200 });
 	}) as unknown as typeof fetch;
 }
 
@@ -352,9 +376,70 @@ const A1 = "0x1111111111111111111111111111111111111111";
 const A2 = "0x2222222222222222222222222222222222222222";
 
 test("native balances are summed across holding addresses, in wei", async () => {
-	const a = evm({ eth_getBalance: "0xde0b6b3a7640000" }, [A1, A2]);
+	// `eth_blockNumber` is now part of this path and that is the point of the
+	// test changing rather than the stub being patched quietly: the custody read
+	// PINS every balance to one explicit block instead of asking for "latest".
+	// Without the pin, a sum taken across moving blocks can see a sweep in
+	// flight at neither end — the money leaves the customer address at block N
+	// and lands at the hot address at N+1 — and report a shortfall that does not
+	// exist. A shortfall has no tolerance at any size and halts the asset.
+	const a = evm({ eth_blockNumber: "0x10", eth_getBalance: "0xde0b6b3a7640000" }, [A1, A2]);
 	// 1e18 each.
 	assert.equal(await a.balance(), 2_000_000_000_000_000_000n);
+});
+
+test("EVERY CUSTODY BALANCE READ IS PINNED TO ONE BLOCK, never 'latest'", async () => {
+	const seen: Array<{ method: string; params: unknown }> = [];
+	const a = new EvmRpcAdapter(
+		"OCTA",
+		new JsonRpc({
+			url: "http://127.0.0.1:8545",
+			fetchImpl: rpcStub({ eth_blockNumber: "0x4d2", eth_getBalance: "0x1" }, seen),
+		}),
+		{ decimals: 18, addresses: [A1, A2] },
+	);
+	await a.balance();
+	const balances = seen.filter((s) => s.method === "eth_getBalance");
+	assert.equal(balances.length, 2);
+	for (const b of balances) {
+		const params = b.params as [string, string];
+		// The literal block the pass pinned, not "latest" and not "pending".
+		assert.equal(params[1], "0x4d2");
+	}
+});
+
+test("A BLOCK THAT CANNOT BE PINNED IS AN ERROR, not a fall back to 'latest'", async () => {
+	// An endpoint that answers eth_blockNumber with junk has not given us an
+	// instant to read the treasury at. Falling back to "latest" here would be
+	// the silent version of the bug above.
+	const a = evm({ eth_blockNumber: "not-a-quantity", eth_getBalance: "0x1" }, [A1]);
+	await assert.rejects(() => a.balance(), /Refusing to fall back to 'latest'/);
+});
+
+test("A SHORT BATCH IS AN ERROR, not a partial custody total", async () => {
+	// Asked for two balances, given one. A partial sum is indistinguishable
+	// from a real shortfall, and a shortfall halts withdrawals for every
+	// customer holding the asset — so the reconciler must get UNAVAILABLE
+	// rather than a number that is too small.
+	const shortBatch = (async (_url: string, init?: RequestInit) => {
+		const body = JSON.parse(String(init?.body)) as unknown;
+		if (Array.isArray(body)) {
+			const first = body[0] as { id: number };
+			return new Response(
+				JSON.stringify([{ jsonrpc: "2.0", id: first.id, result: "0x1" }]),
+				{ status: 200 },
+			);
+		}
+		return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x10" }), {
+			status: 200,
+		});
+	}) as unknown as typeof fetch;
+	const a = new EvmRpcAdapter(
+		"OCTA",
+		new JsonRpc({ url: "http://127.0.0.1:8545", fetchImpl: shortBatch }),
+		{ decimals: 18, addresses: [A1, A2] },
+	);
+	await assert.rejects(() => a.balance(), /Refusing to treat a missing answer as a zero/);
 });
 
 test("AN EVM ROUTE SAYS IT CANNOT ISSUE ADDRESSES OR SEND", async () => {
@@ -377,9 +462,18 @@ test("AN EVM ROUTE SAYS IT CANNOT ISSUE ADDRESSES OR SEND", async () => {
 test("incoming scanning THROWS rather than returning an empty list", async () => {
 	// [] would be read as "no deposits" by the watcher, for a chain it is not
 	// watching at all.
+	//
+	// THE WORDING MOVED FROM "not implemented" TO "not configured" AND THAT IS A
+	// REAL DISTINCTION, NOT A REPHRASING. Scanning IS implemented now
+	// (evmscan.ts), so "not implemented" would have become a false statement in
+	// the one message an operator reads while deciding whether a rail is safe.
+	// What this adapter is saying is narrower and still true: no scanner has
+	// been wired into THIS adapter, so it knows nothing about arrivals. A rail
+	// can hold an xpub, issue addresses, and not be watching them — and that
+	// combination must never present as "no deposits".
 	const a = evm({}, [A1]);
 	await assert.rejects(() => a.incoming(), (e: unknown) => {
-		assert.match(String(e), /not implemented for the EVM route/);
+		assert.match(String(e), /scanning is not configured for this\s+EVM rail/);
 		assert.match(String(e), /rather than 'not watching'/);
 		return true;
 	});
@@ -392,7 +486,12 @@ test("no configured addresses is an error, not a zero balance", async () => {
 
 test("an empty return from a token call is an error, not zero", async () => {
 	// "0x" means the call hit nothing — usually a wrong contract address.
-	const a = evm({ eth_call: "0x" }, [A1], A2);
+	//
+	// `eth_blockNumber` is stubbed because the custody read pins every balance to
+	// one explicit block; it is not what this test is about. What this test is
+	// about is that "0x" must NOT be read as a zero balance, because a wrong
+	// token contract address would then report an empty treasury as a fact.
+	const a = evm({ eth_blockNumber: "0x10", eth_call: "0x" }, [A1], A2);
 	await assert.rejects(() => a.balance(), /the call returned no data/);
 });
 
@@ -400,15 +499,30 @@ test("a token balance reads balanceOf with the address padded correctly", async 
 	const seen: Array<{ method: string; params: unknown }> = [];
 	const a = new EvmRpcAdapter("USDX", new JsonRpc({
 		url: "http://127.0.0.1:8545",
-		fetchImpl: rpcStub({ eth_call: "0x0f4240" }, seen),
+		fetchImpl: rpcStub({ eth_blockNumber: "0x10", eth_call: "0x0f4240" }, seen),
 	}), { decimals: 6, addresses: [A1], token: A2 });
 	assert.equal(await a.balance(), 1_000_000n);
-	const params = seen[0]!.params as [{ to: string; data: string }, string];
+	/*
+	 * FOUND BY METHOD, NOT BY POSITION, AND THE DIFFERENCE IS THE REASON THIS
+	 * ASSERTION IS WORTH KEEPING.
+	 *
+	 * This used to read `seen[0]`, which was the balanceOf call back when the
+	 * balance path made exactly one request. It is now the `eth_blockNumber`
+	 * that pins the read to a single block, so a positional lookup would be
+	 * asserting the padding of the wrong call — and would keep passing while
+	 * actually checking nothing. Selecting by method survives any future
+	 * round trip being added ahead of this one.
+	 */
+	const call = seen.find((s) => s.method === "eth_call");
+	assert.ok(call !== undefined, "the token balance must be read with eth_call");
+	const params = call.params as [{ to: string; data: string }, string];
 	assert.equal(params[0].to, A2);
 	assert.equal(
 		params[0].data,
 		"0x70a08231" + "1111111111111111111111111111111111111111".padStart(64, "0"),
 	);
+	// The token read is pinned to the same explicit block as a native read.
+	assert.equal(params[1], "0x10");
 });
 
 test("a contract whose decimals disagree with the config is reported", async () => {
