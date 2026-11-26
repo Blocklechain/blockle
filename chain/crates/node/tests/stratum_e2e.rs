@@ -118,6 +118,37 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
     )
     .unwrap();
 
+    /*
+     * THE SUBSCRIBE REPLY MUST BE THE FIRST LINE BACK. This is the live
+     * ordering contract, and it can only be asserted here, against a real
+     * server on a real socket.
+     *
+     * A Z9 Mini sent mining.subscribe, read back `mining.set_target`, and sent
+     * FIN 10ms later without ever reaching mining.authorize — 470 connects,
+     * 470 subscribes, 470 disconnects, zero authorized. cgminer-family
+     * firmware requires a "result" member in the first line it reads after
+     * subscribing; it got a notification and declared the pool unusable
+     * ("No servers could be used! Exiting.").
+     *
+     * The cause was the job push living inside the mining.subscribe arm, which
+     * queued set_target and notify ahead of the reply on the same channel. A
+     * unit test cannot see this: it would have to hand-sequence the very calls
+     * whose order is in question. So it is pinned here, and it fails if anyone
+     * moves the push back.
+     */
+    {
+        let first = lines
+            .first()
+            .cloned()
+            .unwrap_or_else(|| read_until(&mut reader, &mut lines, |_| true).clone());
+        assert!(
+            first.get("result").is_some() && !first["result"].is_null(),
+            "line 1 after mining.subscribe must carry a result, not a notification \
+             — a strict cgminer hangs up here. Got: {first}"
+        );
+        assert_eq!(first["id"], json!(1), "and it must answer the subscribe's id");
+    }
+
     let sub = read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(1))).clone();
     /*
      * BEHAVE LIKE A REAL MINER: derive the nonce2 width from what the pool

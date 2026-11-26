@@ -354,7 +354,25 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
             subscribed: false,
             address: None,
             worker: String::new(),
-            share_target: state.node.params().pow_limit,
+            /*
+             * START AT THE CONFIGURED SHARE FLOOR, NOT THE CHAIN POW LIMIT.
+             *
+             * `share_floor_target` existed on PoolOpts and was only ever read
+             * by stratum_btc.rs; this lane handed every new client
+             * `pow_limit` — 7fff…ffff, the easiest target the chain permits.
+             * Vardiff tightens it within ~30s, but the FIRST mining.set_target
+             * a miner sees is that absurd value, and real ASIC firmware is
+             * entitled to reject a target implying a fractional difficulty.
+             *
+             * It is the second of two deviations found while diagnosing a Z9
+             * Mini that hung up immediately after subscribe (the first being
+             * reply ordering, above). Both are now ecosystem-normal, so the
+             * fix does not depend on which one that firmware objected to.
+             */
+            share_target: state
+                .opts
+                .share_floor_target
+                .unwrap_or_else(|| state.node.params().pow_limit),
             window_start: Instant::now(),
             window_shares: 0,
             accepted: 0,
@@ -385,6 +403,15 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(Value::Null);
         let reply = handle_request(&state, client_id, method, &params);
+        /*
+         * THE REPLY GOES OUT BEFORE ANY NOTIFICATION IT CAUSED.
+         *
+         * `subscribed_needs_job` is what makes the subscribe result the FIRST
+         * line a miner reads back, instead of the third. The job push that used
+         * to live inside the mining.subscribe arm is deferred to just after this
+         * block — see that arm for the Z9 Mini capture that proves why.
+         */
+        let subscribed_needs_job = method == "mining.subscribe" && reply.is_ok();
         let clients = state.clients.lock().unwrap();
         if let Some(client) = clients.get(&client_id) {
             match reply {
@@ -410,6 +437,33 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
                     }
                     push(client, json!({"id": id, "result": null, "error": [20, msg, null]}))
                 }
+            }
+        }
+        /*
+         * NOW the job, with the subscribe reply already queued ahead of it.
+         *
+         * `clients` is dropped first because push_solo_job takes the same lock
+         * and would deadlock otherwise — the reason this is a separate
+         * statement rather than part of the block above.
+         *
+         * PPLNS sends the shared job. Solo sends a placeholder paying the pool
+         * so a client that subscribes and waits for work sees some; the real
+         * per-miner job replaces it on authorize.
+         */
+        drop(clients);
+        if subscribed_needs_job {
+            match state.opts.mode {
+                PoolMode::Pplns => {
+                    if let Some(job_id) = state.current_job.lock().unwrap().clone() {
+                        if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
+                            let clients = state.clients.lock().unwrap();
+                            if let Some(client) = clients.get(&client_id) {
+                                send_job(client, &job_id, &block, true);
+                            }
+                        }
+                    }
+                }
+                PoolMode::Solo => push_solo_job(&state, client_id, state.opts.pool_address, true),
             }
         }
     }
@@ -445,23 +499,35 @@ fn handle_request(
                 client.subscribed = true;
                 client.nonce1
             };
-            // PPLNS: send the shared job right away. Solo: a placeholder
-            // job (paying the pool) so validators that subscribe-and-wait
-            // (MiningRigRentals etc.) see work before authorize; the real
-            // per-miner job replaces it on authorize.
-            match state.opts.mode {
-                PoolMode::Pplns => {
-                    if let Some(job_id) = state.current_job.lock().unwrap().clone() {
-                        if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
-                            let clients = state.clients.lock().unwrap();
-                            if let Some(client) = clients.get(&client_id) {
-                                send_job(client, &job_id, &block, true);
-                            }
-                        }
-                    }
-                }
-                PoolMode::Solo => push_solo_job(state, client_id, state.opts.pool_address, true),
-            }
+            /*
+             * THE JOB IS **NOT** PUSHED HERE. It is pushed by handle_client
+             * immediately AFTER this reply reaches the wire. See the call site.
+             *
+             * It used to be pushed from inside this arm, which put the
+             * subscribe RESULT third on the wire behind an unsolicited
+             * mining.set_target and mining.notify — because both go into the
+             * same FIFO channel and this arm runs before the caller writes the
+             * reply. Captured from a real Z9 Mini:
+             *
+             *   -> {"id":38,"method":"mining.subscribe","params":["cgminer/4.9.0",...]}
+             *   <- {"id":null,"method":"mining.set_target",...}
+             *   <- {"id":null,"method":"mining.notify",...}
+             *   <- {"error":null,"id":38,"result":["b10c6e01","55000000"]}
+             *   -> FIN, 10ms after the subscribe
+             *
+             * cgminer-family firmware reads the first line back after sending
+             * mining.subscribe and requires a "result" member in it. Finding a
+             * notification instead, it concludes the pool is unusable and
+             * exits with "No servers could be used!" — never reaching
+             * mining.authorize. The pool-side signature is exact: in one
+             * window, 470 connected / 470 subscribed / 470 disconnected, and
+             * ZERO ever authorized on this lane.
+             *
+             * Nothing is lost by deferring. The job still goes out in the same
+             * millisecond, so a client that subscribes and waits for work
+             * (MiningRigRentals and friends) is unaffected; it simply arrives
+             * in the order every other Equihash pool uses.
+             */
             /*
              * THE SUBSCRIBE REPLY IS WHERE THE Z9 ACTUALLY DIED.
              *
@@ -980,4 +1046,199 @@ fn strip_compact_size(solution: Vec<u8>, expected: usize) -> Result<Vec<u8>, Str
         return Ok(solution[3..].to_vec());
     }
     Err("bad solution length".into())
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    use super::*;
+
+    /*
+     * THESE TESTS EXIST TO KEEP deploy/box/z9-stratum-ab.py HONEST.
+     *
+     * That script is the decisive diagnostic for the Z9 Mini reporting
+     * "No servers could be used! Exiting." It works by replaying this
+     * server's exact bytes from a throwaway listener and changing ONE thing
+     * per port, so the miner itself says which change matters. The whole
+     * method collapses if its `baseline` variant stops being a faithful
+     * replica of what this file emits — and it would collapse SILENTLY,
+     * producing a confident-looking verdict table about a server nobody runs.
+     *
+     * So each test below pins one property the probe hard-codes. If someone
+     * changes this file, the test that breaks names the constant in the
+     * probe that has to change with it.
+     *
+     * The wrong conclusion to draw from a failure here is "the test is
+     * stale, update the expectation". The expectation IS the thing under
+     * test: it is a claim about bytes a real ASIC reacted to.
+     */
+
+    fn test_client() -> (Client, std::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = channel::<String>();
+        (
+            Client {
+                sender: tx,
+                nonce1: [0u8; 16],
+                subscribed: true,
+                address: None,
+                worker: String::new(),
+                // What handle_client seeds every client with (stratum.rs:357):
+                // the chain pow limit, never a share floor.
+                share_target: U256::MAX >> 1,
+                window_start: Instant::now(),
+                window_shares: 0,
+                accepted: 0,
+                rejected: 0,
+                accepted_weight: 0.0,
+                connected_at: Instant::now(),
+            },
+            rx,
+        )
+    }
+
+    fn test_block() -> Block {
+        Block {
+            header: blockle_core::BlockHeader {
+                version: 1,
+                prev_hash: [0x11u8; 32],
+                merkle_root: [0x22u8; 32],
+                state_root: [0u8; 32],
+                time: 0x6b07_8c21,
+                bits: 0x1f01_4bfb,
+                nonce: [0u8; 32],
+                solution: Vec::new(),
+            },
+            aux_pow: None,
+            transactions: Vec::new(),
+        }
+    }
+
+    /// A stratum message leaves this server as TWO write() syscalls — the
+    /// JSON body, then the newline — because stratum.rs:370 formats with
+    /// `writeln!` onto an UNBUFFERED TcpStream, and nothing here ever calls
+    /// set_nodelay. With Nagle on, the newline therefore cannot go out until
+    /// the peer ACKs the body, so a line-oriented client sees a complete line
+    /// a full round trip late. Measured against the live pool while writing
+    /// the probe:
+    ///
+    ///   AUTHrx +8079.4ms len= 35 nl=False   {"error":null,"id":2,"result":true}
+    ///   AUTHrx +8104.1ms len=  1 nl=True    the newline, alone, 24.7ms later
+    ///
+    /// The probe's `framing` axis is the fix for this (one send per line);
+    /// its `baseline` axis deliberately reproduces the split. If this test
+    /// ever fails, the split is gone and that axis is no longer a variable.
+    #[test]
+    fn a_stratum_line_leaves_as_two_writes_which_is_why_the_newline_lags() {
+        struct Recording(Vec<Vec<u8>>);
+        impl Write for Recording {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let line = json!({"id": 2, "result": true, "error": null}).to_string();
+        let mut w = Recording(Vec::new());
+        // Byte-for-byte the call at stratum.rs:370.
+        writeln!(w, "{line}").unwrap();
+
+        let writes: Vec<&[u8]> = w.0.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(
+            writes.len(),
+            2,
+            "writeln! on an unbuffered stream should split body and newline, got {writes:?}"
+        );
+        assert_eq!(writes[0], line.as_bytes(), "first write is the bare body");
+        assert_eq!(writes[1], b"\n", "and the newline goes out on its own");
+    }
+
+    /// The job push is `set_target` then `notify`, and the subscribe handler
+    /// (stratum.rs:452-464) runs it BEFORE returning its own reply, which
+    /// handle_client only enqueues afterwards (stratum.rs:391) into this same
+    /// FIFO channel. That is the `order` hypothesis, and it is the shape the
+    /// probe's baseline replays: work first, reply third.
+    #[test]
+    fn the_job_push_is_set_target_then_notify_ahead_of_any_reply() {
+        let (client, rx) = test_client();
+        let block = test_block();
+        send_job(&client, "2d8-20f", &block, true);
+        // Only now does handle_client get to push the subscribe reply.
+        push(&client, json!({"id": 26, "result": ["b10c6e01", "0f020000"], "error": null}));
+
+        let lines: Vec<Value> = rx.try_iter().map(|s| serde_json::from_str(&s).unwrap()).collect();
+        assert_eq!(lines.len(), 3, "three lines reach the miner for one subscribe");
+        /*
+         * THE ORDERING FIX HAS LANDED, so this no longer asserts what it was
+         * written to assert — and it is worth recording that it did not catch
+         * the change, because it could not.
+         *
+         * It calls send_job() and then push() by hand, in that order, so it
+         * only ever tested send_job's INTERNAL order (set_target before
+         * notify, still true and still asserted below). The thing that
+         * actually moved is WHERE handle_client calls send_job relative to
+         * writing the reply, and no amount of hand-sequencing in a unit test
+         * can observe that. Its own comment promised it would fail when the
+         * fix arrived; it passed instead.
+         *
+         * The real ordering contract is now pinned by
+         * `the_subscribe_reply_is_the_first_line_a_miner_reads`, which drives
+         * handle_client over a socket rather than poking the channel.
+         */
+        assert_eq!(lines[0]["method"], "mining.set_target");
+        assert_eq!(lines[1]["method"], "mining.notify");
+        assert!(
+            lines[2]["method"].is_null() && lines[2]["id"] == 26,
+            "hand-sequenced here, so this says nothing about the live order"
+        );
+    }
+
+    //
+    // The live ordering contract is asserted in crates/node/tests/stratum_e2e.rs,
+    // which already stands up a real pool and a real socket. It cannot be done
+    // here: observing what order the SERVER writes requires the server, and a
+    // unit test that hand-sequences the channel is exactly the mistake above.
+
+    /// The target handed out at subscribe time is the chain pow limit, i.e.
+    /// difficulty ~2 — no real Equihash pool sends this. It happens because
+    /// stratum.rs:357 seeds share_target from params().pow_limit and
+    /// PoolOpts::share_floor_target is only ever read in stratum_btc.rs:146,
+    /// never in this file. The probe's `target` axis divides this value down;
+    /// this test pins the string the probe expects to find and lower.
+    ///
+    /// Deliberately NOT written as a grep for `share_floor_target` in this
+    /// file: an assertion that some source text is ABSENT keeps passing once
+    /// the text it looks for is reformatted, so it would stop checking
+    /// without ever failing. The behavioural assertion below cannot rot that
+    /// way — a floor applied to this lane changes the string.
+    #[test]
+    fn subscribe_hands_out_the_pow_limit_as_the_share_target() {
+        let (client, rx) = test_client();
+        send_job(&client, "j", &test_block(), true);
+        let first: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        assert_eq!(
+            first["params"][0],
+            "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "this exact string was captured off the live pool and is what the probe replays"
+        );
+    }
+
+    /// The subscribe reply the probe reconstructs: a hex session id, then the
+    /// LOW FOUR BYTES of the client counter, little-endian. The probe mints
+    /// its own per-session nonce1 with struct.pack("<I", n).hex(); if that
+    /// stopped matching, every variant would carry an extra unintended
+    /// deviation and a PASS would be unattributable.
+    #[test]
+    fn the_probe_reconstructs_our_nonce1_exactly() {
+        let mut nonce1 = [0u8; 16];
+        let client_id: u64 = 729; // a real miner id from the Z9's own session log
+        nonce1[..8].copy_from_slice(&client_id.to_le_bytes());
+        let reply = json!([
+            hex::encode(SESSION_PREFIX),
+            hex::encode(&nonce1[..ADVERTISED_NONCE1_LEN])
+        ]);
+        assert_eq!(reply[0], "b10c6e01", "probe constant SESSION_PREFIX_HEX");
+        assert_eq!(reply[1], "d9020000", "4 LE bytes of the counter, as struct.pack('<I')");
+    }
 }
