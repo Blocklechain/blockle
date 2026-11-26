@@ -482,35 +482,27 @@ pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
          * refusing a connection is a bad minute, exhausting the threads is a
          * dead site until someone restarts it by hand.
          */
-        const MAX_LIVE_CONNECTIONS: usize = 256;
         /// A browser sends its request bytes immediately. Ten seconds is
         /// generous for a real client on a bad link and still frees a thread
         /// held by one that never intends to send anything.
+        ///
+        /// THIS DEADLINE IS THE WHOLE FIX. I also added a 256 live-connection
+        /// cap in the same change and it took the site down a third time: biz
+        /// stayed listening and closed every connection instantly, so curl
+        /// reported an empty reply in under 2ms. The counter sat at its ceiling
+        /// while only ~25 threads were alive, i.e. it was leaking somewhere the
+        /// Drop guard did not cover.
+        ///
+        /// Removed rather than debugged under an outage, because the cap was
+        /// never the part that fixed anything: a deadline alone guarantees every
+        /// thread is released within ten seconds, which is what makes
+        /// exhaustion impossible. The cap only bounded the transient peak, and
+        /// a bound that can wedge shut is worse than no bound.
         const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(10);
-        let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let registry = registry.clone();
-                let live = live.clone();
-                // Count BEFORE spawning: deciding after the spawn would mean the
-                // spawn we are trying to avoid has already happened.
-                let n = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if n >= MAX_LIVE_CONNECTIONS {
-                    live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    // Dropped, which closes it. No thread, no response.
-                    continue;
-                }
                 thread::spawn(move || {
-                    // Decrement on EVERY exit path, including the early returns
-                    // below, which is what this guard is for.
-                    struct Live(Arc<std::sync::atomic::AtomicUsize>);
-                    impl Drop for Live {
-                        fn drop(&mut self) {
-                            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                        }
-                    }
-                    let _guard = Live(live);
-
                     let mut stream = stream;
                     // THE DEADLINE THAT WAS MISSING. Without it read_request
                     // blocks forever on a silent client.
