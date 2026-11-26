@@ -536,7 +536,28 @@ CREATE TABLE IF NOT EXISTS ord (
   seq         INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ord_book ON ord(market, side, state);
-CREATE INDEX IF NOT EXISTS idx_ord_price ON ord(market, side, state, price_key);
+/*
+ * THE price_key INDEX IS CREATED BY migrate(), NOT HERE, AND IT CANNOT MOVE.
+ *
+ * SCHEMA is exec'd before migrate() runs. On a database that already exists --
+ * i.e. the live one -- CREATE TABLE IF NOT EXISTS ord does nothing, so
+ * price_key is absent at this point, and an index naming it fails the whole
+ * exec with "no such column: price_key". That took the public API down on
+ * deploy: it would not start, and the venue served nothing until the previous
+ * dist was restored.
+ *
+ * The irony is that migrate()'s own doc comment explains this exact trap for
+ * COLUMNS. Adding the index here reintroduced it by the back door, because an
+ * index is the one other thing in SCHEMA that can reference a column by name.
+ *
+ * migrate() adds the column and then creates this index, and
+ * CREATE INDEX IF NOT EXISTS is idempotent, so a fresh database gets it there
+ * too. Nothing is lost by its absence here except the outage.
+ *
+ * NOTE FOR THE NEXT EDITOR: this comment sits inside a template literal, so a
+ * backtick anywhere in it silently ends the string. That is how the first
+ * version of this comment broke the build.
+ */
 CREATE INDEX IF NOT EXISTS idx_ord_acct ON ord(account_id);
 
 CREATE TABLE IF NOT EXISTS trade (
