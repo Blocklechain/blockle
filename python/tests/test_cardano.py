@@ -208,4 +208,13 @@ def test_moonpay_and_logo():
     assert moonpay.NATIVE_CURRENCY_CODES["cardano"] == V["network"]["moonpay"]["native"]
     assert logos.canon_chain("cardano") == "cardano"
     assert logos.canon_chain("ada") == "cardano"
-    assert "₳" in logos.chain_icon("cardano")
+    # ICONS ARE SVG NOW, NOT GLYPHS. This asserted "₳" was in the icon, which
+    # was true while icons were text; the emoji-to-SVG migration replaced every
+    # one with real artwork, so it has been failing since -- and because the
+    # Python suite gates packaging, that stale assertion helped keep wallet
+    # bundles off the releases. Pinned the way test_logos.py does it: identity
+    # against the registry, plus distinctness so cardano cannot silently fall
+    # back to a generic icon.
+    assert logos.chain_icon("cardano") == logos.CHAIN_ICONS["cardano"]
+    assert "<svg" in logos.chain_icon("cardano")
+    assert logos.chain_icon("cardano") != logos.chain_icon("bitcoin")

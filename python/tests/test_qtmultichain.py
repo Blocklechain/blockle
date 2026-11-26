@@ -155,19 +155,27 @@ class MultiChainControllerTest(unittest.TestCase):
             os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(plugins))
         from PySide6.QtWidgets import QApplication
         from blockle.qtbots import BotsPanel
-        from blockle.qtmultichain import (AccountsTab, AgentTab, ExchangeTab,
-                                          build_tabs)
+        from blockle.qtmultichain import AccountsTab, AgentTab, build_tabs
         QApplication.instance() or QApplication([])
         tabs = build_tabs(self.wallet, self.datadir)
         titles = [t for _w, t in tabs]
-        # the native Bots cockpit + Wallet surfaces are appended after
-        # Accounts/Exchange/Agent (each additive, guarded).
-        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots", "Wallet", "Trade", "AI Chat"])
+        # THE FIRST THREE ARE THE CORE PANELS AND THEIR ORDER IS THE CONTRACT;
+        # everything after is additive and guarded, so this asserts a PREFIX
+        # rather than an exact list. The exact form broke on every tab that
+        # shipped afterwards (Drip, Liquidity, Games), which is how it came to
+        # be red in CI -- and because the Python suite gates packaging, a
+        # stale list assertion was enough to stop any wallet being released.
+        self.assertEqual(titles[:3], ["Accounts", "Agent", "Bots"])
+        for required in ("Accounts", "Agent", "Bots", "Wallet"):
+            self.assertIn(required, titles)
+        # NO EXCHANGE TAB, deliberately: the non-custodial P2P exchange was
+        # discontinued (see build_tabs). The custodial venue at
+        # exchange.blockle.org has never been wired into this desktop wallet.
+        self.assertNotIn("Exchange", titles)
         widgets = [w for w, _t in tabs]
         self.assertIsInstance(widgets[0], AccountsTab)
-        self.assertIsInstance(widgets[1], ExchangeTab)
-        self.assertIsInstance(widgets[2], AgentTab)
-        self.assertIsInstance(widgets[3], BotsPanel)
+        self.assertIsInstance(widgets[1], AgentTab)
+        self.assertIsInstance(widgets[2], BotsPanel)
         # all four share ONE controller
         self.assertIs(widgets[0].ctrl, widgets[2].ctrl)
         self.assertIs(widgets[0].ctrl, widgets[3].ctrl)

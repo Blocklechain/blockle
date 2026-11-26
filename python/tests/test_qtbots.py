@@ -129,7 +129,9 @@ class PanelFlowTest(unittest.TestCase):
         tabs = build_tabs(self.wallet, self.datadir)
         titles = [t for _w, t in tabs]
         self.assertIn("Bots", titles)
-        self.assertEqual(titles[:4], ["Accounts", "Exchange", "Agent", "Bots"])
+        # Prefix, not an exact list, and no Exchange: that tab was removed
+        # with the non-custodial exchange. See test_qtmultichain.
+        self.assertEqual(titles[:3], ["Accounts", "Agent", "Bots"])
         bots = [w for w, t in tabs if t == "Bots"][0]
         self.assertIsInstance(bots, BotsPanel)
         # the Bots panel shares the SAME controller as the other tabs

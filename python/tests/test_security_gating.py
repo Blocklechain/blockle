@@ -344,44 +344,78 @@ class _ConsoleWallet:
 
 
 class ConsoleGateTest(unittest.TestCase):
+    """The debug console is GONE, and this is what keeps it from coming back.
+
+    These four tests used to drive `blockle.qtwallet.run_console_command`,
+    which let a user type `send`/`sendtoaddress`/`z_sendmany` at a prompt. The
+    gate they asserted was that spending was refused unless
+    BLOCKLE_CONSOLE_DEV_SEND was set.
+
+    The console tab was removed wholesale in "sync: pull wallet code + source
+    work from production server" (fde0c53d), which rewrote qtwallet.py. The
+    tests kept importing the deleted function, so all four errored on import
+    and have been RED in CI ever since -- and because the Python suite gates
+    the packaging step, that is why no wallet bundle could be attached to a
+    release.
+
+    Deleting them would drop the security property on the floor. Asserting the
+    feature's ABSENCE keeps it: if anyone reintroduces a console that can
+    spend, these fail and the author has to bring the gate back with it.
+    """
+
     def setUp(self):
         try:
             import PySide6  # noqa: F401
         except ImportError:
             self.skipTest("PySide6 not installed")
-        from blockle.qtwallet import run_console_command
-        self.run_cmd = run_console_command
-        self.w = _ConsoleWallet()
-        os.environ.pop("BLOCKLE_CONSOLE_DEV_SEND", None)
 
-    def tearDown(self):
-        os.environ.pop("BLOCKLE_CONSOLE_DEV_SEND", None)
+    def test_no_console_command_runner_ships(self):
+        import blockle.qtwallet as qtwallet
 
-    def test_friendly_send_blocked_by_default(self):
-        out, err = self.run_cmd(self.w, "send block1dst 1 0.0001")
-        self.assertTrue(err)
-        self.assertIn("blocked", out.lower())
-        self.assertEqual(self.w.sent, [])  # wallet.send NEVER called
+        self.assertFalse(
+            hasattr(qtwallet, "run_console_command"),
+            "a console command runner is back in qtwallet. It must not be able "
+            "to spend by default -- restore the BLOCKLE_CONSOLE_DEV_SEND gate "
+            "and the four tests this replaced (see git history for this file).",
+        )
 
-    def test_raw_send_family_blocked_by_default(self):
-        for line in ("sendtoaddress block1dst 1", "z_sendmany x '[]'",
-                     "sendrawtransaction deadbeef"):
-            out, err = self.run_cmd(self.w, line)
-            self.assertTrue(err, line)
-            self.assertIn("blocked", out.lower(), line)
-        self.assertEqual(self.w.sent, [])
+    def test_no_console_tab_is_built(self):
+        """A console reachable from the UI is the thing that carried the risk."""
+        import pathlib
 
-    def test_read_only_commands_unaffected(self):
-        out, err = self.run_cmd(self.w, "height")
-        self.assertFalse(err)
-        self.assertEqual(out, "1")
-        self.assertEqual(self.w.sent, [])
+        pkg = pathlib.Path(blockle_pkg_dir())
+        offenders = []
+        for path in pkg.glob("*.py"):
+            for num, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                if "addTab" in line and "console" in line.lower():
+                    offenders.append(f"{path.name}:{num}")
+        self.assertEqual(
+            offenders, [],
+            "a Console tab is wired into the wallet UI again: " + ", ".join(offenders),
+        )
 
-    def test_dev_flag_reenables_send(self):
-        os.environ["BLOCKLE_CONSOLE_DEV_SEND"] = "1"
-        out, err = self.run_cmd(self.w, "send block1dst 1 0.0001")
-        self.assertFalse(err, out)
-        self.assertEqual(self.w.sent, [("block1dst", "1", "0.0001")])
+    def test_no_spend_capable_cli_passthrough(self):
+        """The raw-CLI escape hatch the old console exposed must stay closed."""
+        import pathlib
+
+        pkg = pathlib.Path(blockle_pkg_dir())
+        offenders = []
+        for path in pkg.glob("*.py"):
+            text = path.read_text(errors="replace")
+            for name in ("sendtoaddress", "z_sendmany", "sendrawtransaction"):
+                if name in text:
+                    offenders.append(f"{path.name}: {name}")
+        self.assertEqual(
+            offenders, [],
+            "a raw spend-capable CLI passthrough is present again: "
+            + ", ".join(offenders),
+        )
+
+
+def blockle_pkg_dir():
+    import blockle
+
+    return os.path.dirname(blockle.__file__)
 
 
 if __name__ == "__main__":

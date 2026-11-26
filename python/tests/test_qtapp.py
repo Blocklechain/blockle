@@ -66,10 +66,12 @@ class QtAppWindowTest(unittest.TestCase):
         win = build_app_window(self.wallet, self.datadir)
         titles = tab_titles(win)
         # the multichain engine layers are all present...
-        for t in ("Accounts", "Exchange", "Agent", "Bots", "Wallet"):
+        for t in ("Accounts", "Agent", "Bots", "Wallet"):
             self.assertIn(t, titles, f"missing tab: {t}")
         # ...and the first three are the core panels, in order.
-        self.assertEqual(titles[:3], ["Accounts", "Exchange", "Agent"])
+        self.assertEqual(titles[:3], ["Accounts", "Agent", "Bots"])
+        # Exchange is absent on purpose -- see test_qtmultichain for why.
+        self.assertNotIn("Exchange", titles)
 
         # the panels share ONE controller (one vault / loop / gate); stop its loop.
         tabw = win.tabs
