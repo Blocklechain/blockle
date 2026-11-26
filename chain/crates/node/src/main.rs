@@ -1347,14 +1347,41 @@ fn intel_cmd(datadir: &Path, params: ChainParams, cmd: IntelCmd) -> Result<()> {
     let gas_fee = |g: u64, c: &blockle_chain::Chain| -> Result<u64> {
         g.checked_mul(c.params.gas_price).ok_or_else(|| anyhow!("gas overflow"))
     };
-    let send = |datadir: &Path, action: ContractAction, gas: u64, node: Option<String>, msg: &str| -> Result<()> {
+    /*
+     * ONE CHAIN LOAD PER COMMAND, AND THE REASON IS MINUTES OF REAL TIME.
+     *
+     * `load_chain` replays and revalidates the whole chain: about twelve
+     * minutes at height 86,000, single-threaded. `Validate` used to pay that
+     * TWICE — once to read `intel.last_epoch_seed` for the beacon ack, then
+     * again inside this closure — which made the three-command epoch duty
+     * roughly 48 minutes instead of 36.
+     *
+     * That is not a tidiness point. The duties must all land inside ONE epoch
+     * or the validator is slashed 5% of its bond for revealing without a
+     * proof-of-validation, so every minute of load is margin spent against a
+     * real penalty. Taking the action as a CLOSURE OVER THE LOADED CHAIN lets
+     * a caller read consensus state and build its action without a second
+     * pass.
+     */
+    let send_built = |datadir: &Path,
+                      build: &dyn Fn(&blockle_chain::Chain) -> ContractAction,
+                      gas: u64,
+                      node: Option<String>,
+                      msg: &str|
+     -> Result<()> {
         let kp = load_wallet(datadir)?;
         let chain = storage::load_chain(datadir, params.clone())?;
         let mut mempool = storage::load_mempool(datadir)?;
         let fee = gas_fee(gas, &chain)?;
+        let action = build(&chain);
         let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
         println!("{msg}");
         submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+    };
+    let send = |datadir: &Path, action: ContractAction, gas: u64, node: Option<String>, msg: &str| -> Result<()> {
+        // The common case: the action does not depend on chain state.
+        let cell = std::cell::RefCell::new(Some(action));
+        send_built(datadir, &|_| cell.borrow_mut().take().expect("built once"), gas, node, msg)
     };
     match cmd {
         IntelCmd::RegisterSubnet { tier, schema, gas, node } => send(
@@ -1398,14 +1425,19 @@ fn intel_cmd(datadir: &Path, params: ChainParams, cmd: IntelCmd) -> Result<()> {
                 gas, node, &format!("revealed weights for subnet {subnet}"),
             )
         }
-        IntelCmd::Validate { subnet, gas, node } => {
-            let ack = storage::load_chain(datadir, params.clone())?.intel.last_epoch_seed;
-            send(
-                datadir,
-                ContractAction::Intel(IntelAction::ValidationProof { subnet_id: subnet, beacon_ack: ack, gas_limit: gas }),
-                gas, node, &format!("submitting proof-of-validation for subnet {subnet}"),
-            )
-        }
+        IntelCmd::Validate { subnet, gas, node } => send_built(
+            datadir,
+            // The beacon ack is read from the SAME loaded chain the transaction
+            // is funded from, not from a second twelve-minute replay.
+            &|chain| {
+                ContractAction::Intel(IntelAction::ValidationProof {
+                    subnet_id: subnet,
+                    beacon_ack: chain.intel.last_epoch_seed,
+                    gas_limit: gas,
+                })
+            },
+            gas, node, &format!("submitting proof-of-validation for subnet {subnet}"),
+        ),
         IntelCmd::Claim { gas, node } => send(
             datadir,
             ContractAction::Intel(IntelAction::NeuronClaim { gas_limit: gas }),
