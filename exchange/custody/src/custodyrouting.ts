@@ -73,7 +73,27 @@ export function nodeAdapters(args: {
 			 * can answer "how much is at this address". See blockchain.ts.
 			 */
 			adapter = coin.symbol === "BLOCK"
-				? blockAdapterFromEnv(args.env)
+				/*
+				 * THE POOL HAS TO BE FORWARDED, and for a while it was not.
+				 *
+				 * This read `blockAdapterFromEnv(args.env)` — one argument —
+				 * while the signature is (env, fetchImpl?, pool?). So
+				 * `nodeAdapters` accepted a `blockPool`, used it for nothing,
+				 * and handed BLOCK an adapter with no pool.
+				 *
+				 * The symptom was maddening precisely because the pool WAS
+				 * loaded: the API logged "block pool: 999 free of 1000" at
+				 * startup from its own reference, and the deposit route then
+				 * refused every request with "no address pool is loaded, derive
+				 * a batch on the wallet host" — advice to do the thing that had
+				 * already been done. 1000 addresses sat in the database while
+				 * customers were told BLOCK deposits were closed.
+				 *
+				 * An optional trailing parameter is what made it silent: there
+				 * is no arity error, so the call compiles, runs, and quietly
+				 * disables per-customer BLOCK deposits.
+				 */
+				? blockAdapterFromEnv(args.env, undefined, args.blockPool)
 				: adapterFromEnv({
 					symbol: coin.symbol,
 					route: coin.custody,
