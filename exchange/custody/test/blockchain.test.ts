@@ -277,6 +277,126 @@ test("history can be filtered by height, for an incremental pass", async () => {
 	assert.deepEqual((await a.incoming(50)).map((p) => p.txid), ["new"]);
 });
 
+test("THE TIMEOUT COVERS THE BODY, not just the response headers", async () => {
+	/*
+	 * The hang that cost the watcher two full 5-minute start timeouts on
+	 * 2026-11-26: headers arrived promptly, the body never did, and the
+	 * deadline had already been cleared. A chain-replaying node does exactly
+	 * this for ~15 minutes after every restart.
+	 */
+	const a = new BlockExplorerAdapter({
+		url: "http://127.0.0.1:8445",
+		addresses: [A1],
+		timeoutMs: 40,
+		fetchImpl: ((_u: string, init?: RequestInit) =>
+			Promise.resolve({
+				ok: true,
+				status: 200,
+				// Headers are fine. The body resolves only if the request is
+				// aborted — i.e. never, unless the deadline still applies.
+				text: () =>
+					new Promise<string>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () =>
+							reject(new Error("aborted")),
+						);
+					}),
+			} as unknown as Response)) as unknown as typeof fetch,
+	});
+
+	await assert.rejects(
+		() => a.balance(),
+		/did not answer within 40ms/,
+		"a stalled body must hit the deadline, not wait forever",
+	);
+});
+
+test("INCOMING REFUSES WHEN IT HAS NOTHING TO SCAN, rather than reporting calm", async () => {
+	/*
+	 * THE 2.1 BLOCK BUG, 2026-11-26. The deposit watcher built its adapters
+	 * without the pool, `BLOCK_CUSTODY_ADDRESSES` was empty, and so `incoming`
+	 * looped over zero addresses and returned []. The watcher logged a clean
+	 * pass while a confirmed deposit sat on-chain uncredited at an address the
+	 * pool had issued to a real account.
+	 *
+	 * "Nothing to scan" and "scanned, nothing there" MUST NOT produce the same
+	 * answer, because only one of them is a reason to page someone.
+	 */
+	const a = adapter(
+		{ "/explorer/stats": { height: 100, lanes: [{ last_block_height: 100 }] } },
+		[],
+	);
+	await assert.rejects(() => a.incoming(), /nothing.*to scan|no BLOCK custody/i);
+});
+
+test("DEPOSIT SCANNING WALKS ISSUED ADDRESSES ONLY, while custody counts them all", async () => {
+	/*
+	 * The explorer answers one address per request, so this is the difference
+	 * between four requests and a thousand — the live pool is 1000 entries
+	 * with 4 issued, and scanning all of them blew the watcher's 5-minute
+	 * start timeout. It is also the correct semantics: nobody has been told an
+	 * unissued address, so a deposit cannot legitimately arrive at one.
+	 */
+	const seen: string[] = [];
+	const a = new BlockExplorerAdapter({
+		url: "http://127.0.0.1:8445",
+		addresses: [],
+		pool: {
+			allAddresses: () => [A1, A2],
+			issuedAddresses: () => [A1],
+			status: () => ({ total: 2, issued: 1, free: 1, low: false }),
+			take: () => {
+				throw new Error("not used here");
+			},
+		},
+		fetchImpl: explorer(
+			{
+				"/explorer/stats": { height: 100, lanes: [{ last_block_height: 100 }] },
+				[`/explorer/address/${A1}`]: {
+					balance: 7,
+					history: [{ txid: "issued", height: 99, net: 7 }],
+				},
+				[`/explorer/address/${A2}`]: { balance: 11, history: [] },
+			},
+			seen,
+		),
+	});
+
+	assert.deepEqual((await a.incoming()).map((p) => p.txid), ["issued"]);
+	assert.ok(
+		!seen.some((u) => u.includes(A2)),
+		`the unissued address must not be scanned for deposits; saw ${seen.join(", ")}`,
+	);
+
+	// ...but custody still counts it, or a pool entry holding coins would read
+	// as a shortfall.
+	assert.equal(await a.balance(), 18n);
+});
+
+test("a pool's addresses are scanned for deposits, not just the declared ones", async () => {
+	// The live shape: nothing is swept to a fixed address yet, so EVERY
+	// watched address comes from the pool.
+	const a = new BlockExplorerAdapter({
+		url: "http://127.0.0.1:8445",
+		addresses: [],
+		pool: {
+			allAddresses: () => [A1],
+			status: () => ({ total: 1, issued: 1, free: 0, low: true }),
+			take: () => {
+				throw new Error("not used here");
+			},
+		},
+		fetchImpl: explorer({
+			"/explorer/stats": { height: 100, lanes: [{ last_block_height: 100 }] },
+			[`/explorer/address/${A1}`]: {
+				history: [{ txid: "pooled", height: 98, net: 110_000_000 }],
+			},
+		}),
+	});
+	const got = await a.incoming();
+	assert.deepEqual(got.map((p) => p.txid), ["pooled"]);
+	assert.equal(got[0]!.amount, 110_000_000n);
+});
+
 // ------------------------------------------------------------------ the env
 
 test("nothing configured means no adapter, which is the normal state", () => {

@@ -21,6 +21,8 @@ import Database from "better-sqlite3";
 import { ASSETS, custodyIds, settlementAsset } from "./assets";
 import { BitGoHoldings } from "./bitgo";
 import { BitGoDeposits } from "./bitgodeposits";
+import { BlockAddressPool } from "./blockaddresspool";
+import type { AddressPool } from "./blockchain";
 import { nodeAdapters } from "./custodyrouting";
 import { runOnce } from "./depositwatcher";
 import { pinAndVerify } from "./ipv4";
@@ -135,10 +137,49 @@ async function main(): Promise<void> {
 	 * being able to spend. `nodeAdapters` builds them from the environment
 	 * and skips anything unconfigured.
 	 */
+	/*
+	 * BLOCK'S POOL, READ-ONLY — AND WITHOUT IT THIS JOB IS BLIND.
+	 *
+	 * BLOCK has no wallet on the node. The adapter learns which addresses are
+	 * the venue's by being told: `BLOCK_CUSTODY_ADDRESSES` plus the pool. That
+	 * env var is empty (nothing is swept to a fixed address yet), so with no
+	 * pool `incoming()` iterated an EMPTY address list and reported, perfectly
+	 * calmly, that no BLOCK had arrived. On 2026-11-26 a real 2.1 BLOCK
+	 * deposit sat confirmed on-chain, at an address the pool had issued to a
+	 * real account, uncredited, while this job logged a clean pass. The same
+	 * bug as `nodeAdapters` dropping the pool argument, one process over.
+	 *
+	 * `take` is deliberately severed. Issuing is the API's job; a credit job
+	 * that could also hand out addresses could hand one out and credit it in
+	 * the same tick, and the pool's "issued to whom" record is the only thing
+	 * that makes a deposit attributable.
+	 */
+	const pool = new BlockAddressPool(db);
+	const readOnlyPool: AddressPool = {
+		allAddresses: () => pool.allAddresses(),
+		// What deposit scanning actually walks: one explorer request each, so
+		// the cost tracks customers rather than pool size.
+		issuedAddresses: () => pool.issuedAddresses(),
+		status: () => pool.status(),
+		take: () => {
+			throw new Error(
+				"the deposit watcher must not issue addresses: it credits " +
+					"deposits, and issuing is the API's job",
+			);
+		},
+	};
 	const nodeFeeds = nodeAdapters({
 		env: process.env,
+		blockPool: readOnlyPool,
 		onSkip: (symbol, why) => console.log(`  ${symbol}: not watched (${why})`),
 	});
+	{
+		const s = readOnlyPool.status();
+		console.log(
+			`  BLOCK deposit-address pool: ${s.issued} issued of ${s.total} ` +
+				`(${s.free} free)${s.low ? " — LOW, load more" : ""}`,
+		);
+	}
 	if (nodeFeeds.size > 0) {
 		console.log(`  watching our own nodes for: ${[...nodeFeeds.keys()].join(", ")}`);
 	}

@@ -54,6 +54,12 @@ import { ChainError } from "./chains";
 export interface AddressPool {
 	take(userId: string): { address: string };
 	allAddresses(): readonly string[];
+	/**
+	 * The subset that has been handed to an account. Optional so a caller with
+	 * a tiny fixed pool can omit it; when absent, scanning falls back to
+	 * `allAddresses`, which is correct but costs one request per entry.
+	 */
+	issuedAddresses?(): readonly string[];
 	status(): { total: number; issued: number; free: number; low: boolean };
 }
 
@@ -226,6 +232,17 @@ export class BlockExplorerAdapter implements ChainAdapter {
 		return [...new Set([...this.cfg.addresses, ...pooled])];
 	}
 
+	/**
+	 * Where a deposit can legitimately arrive: the declared addresses plus the
+	 * pool entries actually issued to an account. See
+	 * `BlockAddressPool.issuedAddresses` for why this is not `custodyAddresses`.
+	 */
+	private watchedAddresses(): readonly string[] {
+		const pool = this.cfg.pool;
+		const pooled = pool?.issuedAddresses?.() ?? pool?.allAddresses() ?? [];
+		return [...new Set([...this.cfg.addresses, ...pooled])];
+	}
+
 	async balance(): Promise<bigint> {
 		if (this.custodyAddresses().length === 0) {
 			throw new ChainError(
@@ -279,9 +296,27 @@ export class BlockExplorerAdapter implements ChainAdapter {
 	}
 
 	async incoming(sinceHeight?: number): Promise<readonly IncomingPayment[]> {
+		/*
+		 * AN EMPTY ADDRESS LIST IS NOT "NO DEPOSITS", for the same reason
+		 * `balance` refuses to call it zero. A watcher that is told nothing to
+		 * scan and answers "nothing arrived" is indistinguishable, in every
+		 * log line, from one that scanned and found nothing — and the first is
+		 * a customer's coins sitting on-chain uncredited. This cost a real
+		 * 2.1 BLOCK deposit a silent night (2026-11-26); failing loudly puts
+		 * BLOCK in the watcher's "unreadable" count instead, which is paged on.
+		 */
+		if (this.watchedAddresses().length === 0) {
+			throw new ChainError(
+				"no BLOCK custody addresses are configured, so there is nothing " +
+					"to scan for deposits. Refusing to report an empty result, " +
+					"which would read as 'no deposits arrived'. Load a deposit " +
+					"pool (blockle-exchange-blockpool load) or set " +
+					"BLOCK_CUSTODY_ADDRESSES.",
+			);
+		}
 		const tip = (await this.probe()).height;
 		const out: IncomingPayment[] = [];
-		for (const address of this.custodyAddresses()) {
+		for (const address of this.watchedAddresses()) {
 			const r = await this.get<AddressJson>(
 				`/explorer/address/${encodeURIComponent(address)}`,
 			);
@@ -332,22 +367,41 @@ export class BlockExplorerAdapter implements ChainAdapter {
 	private async get<T>(path: string): Promise<T> {
 		const url = `${this.cfg.url.replace(/\/$/, "")}${path}`;
 		const ctl = new AbortController();
+		/*
+		 * THE DEADLINE HAS TO COVER THE BODY, NOT JUST THE HEADERS.
+		 *
+		 * This used to `clearTimeout` in a `finally` attached to the fetch, so
+		 * the deadline expired the instant response headers arrived and
+		 * `res.text()` then waited forever. That is not a theoretical window:
+		 * this node is single-threaded and replays its entire chain on every
+		 * start (~15 minutes), during which it accepts connections and
+		 * answers headers but does not produce a body. On 2026-11-26 that
+		 * hung the deposit watcher through its whole 5-minute systemd start
+		 * timeout, twice, with no error — the one failure mode a credit job
+		 * must never have, because "hung" and "nothing arrived" look the same
+		 * from outside.
+		 *
+		 * So the timer now spans header AND body, and is cleared only once the
+		 * body is in hand.
+		 */
 		const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+		let text: string;
 		let res: Response;
 		try {
 			res = await this.fetchImpl(url, {
 				signal: ctl.signal,
 				headers: { accept: "application/json" },
 			});
+			text = await res.text();
 		} catch (e) {
-			throw new ChainError(
-				`BLOCK explorer ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`,
-				true,
-			);
+			const why = ctl.signal.aborted
+				? `did not answer within ${this.timeoutMs}ms (the node may be ` +
+					"replaying its chain, which it does on every restart)"
+				: `unreachable: ${e instanceof Error ? e.message : String(e)}`;
+			throw new ChainError(`BLOCK explorer ${path} ${why}`, true);
 		} finally {
 			clearTimeout(timer);
 		}
-		const text = await res.text();
 		if (!res.ok) {
 			throw new ChainError(`BLOCK explorer ${path}: HTTP ${res.status} ${text.slice(0, 120)}`);
 		}

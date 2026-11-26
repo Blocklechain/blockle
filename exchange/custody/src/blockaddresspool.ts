@@ -225,6 +225,34 @@ export class BlockAddressPool {
 	}
 
 	/**
+	 * Only the addresses that have actually been handed to somebody.
+	 *
+	 * THE DIFFERENCE FROM `allAddresses` IS NOT COSMETIC. Custody wants every
+	 * address — coins we control are ours wherever they sit, and a pool entry
+	 * omitted from the total reads as a shortfall. Deposit SCANNING wants only
+	 * the issued ones, for two separate reasons:
+	 *
+	 *  - Cost. The explorer answers one address per request, so scanning the
+	 *    whole pool is one request per entry. A 1000-entry pool with four
+	 *    customers made 1000 sequential requests and blew the watcher's
+	 *    5-minute start timeout, which is how this was found.
+	 *  - Meaning. Nobody has been told an unissued address, so money cannot
+	 *    legitimately arrive at one. If it ever did, it is not a deposit to
+	 *    credit; it is an anomaly, and the reconciler is what should surface
+	 *    it, via `allAddresses` in the custody total.
+	 */
+	issuedAddresses(): readonly string[] {
+		return (
+			this.db
+				.prepare(
+					`SELECT address FROM block_address_pool
+					  WHERE issued_to IS NOT NULL ORDER BY idx`,
+				)
+				.all() as Array<{ address: string }>
+		).map((r) => r.address);
+	}
+
+	/**
 	 * How much runway is left.
 	 *
 	 * `low` is the signal an operator acts on. A pool that empties stops
