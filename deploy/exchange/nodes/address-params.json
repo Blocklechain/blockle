@@ -29,7 +29,7 @@
     "choice strands somebody: a Raptoreum Core seed under 10226 shows nothing,",
     "and a SLIP-44 wallet's seed under 200 shows nothing. Deriving every",
     "candidate and displaying the union removes the decision entirely — balance",
-    "lookups are one cheap call each against coin.blockle.org. `pathPreferred`",
+    "lookups are one cheap call each against blockle.org. `pathPreferred`",
     "is only the default for a NEW account and for choosing change addresses.",
     "",
     "MEWC is now recorded, by a different route. Its daemon has never been idle",
@@ -55,7 +55,7 @@
     "pathCandidates": ["m/84'/0'/0'/0", "m/44'/0'/0'/0", "m/49'/0'/0'/0"],
     "pathSource": "its own node's listdescriptors: [44h/0h/0h], [49h/0h/0h], [84h/0h/0h], [86h/0h/0h]",
     "bytesSource": "/opt/perbug/src/kernel/chainparams.cpp + a live getnewaddress",
-    "esplora": "https://coin.blockle.org/perbug",
+    "esplora": "https://blockle.org/perbug",
     "balanceStrategy": "scan",
     "note": "OURS, and the only segwit coin here — getnewaddress returns bech32 (pb1q...), so it needs segwit:true and hrp:'pb', not the legacy base58 path the other five use. Being an unpatched Bitcoin Core fork, its wallet derives under coin type 0 (Bitcoin's) and its xprv version bytes are Bitcoin's 0x0488ADE4. Served by coin-esplora with its strategy PINNED to scan, because its node carries the mining pool wallet and the watch strategy would import addresses into it."
   },
@@ -72,7 +72,7 @@
     "pathCandidates": ["m/44'/1669'/0'/0"],
     "pathSource": "src/kernel/chainparams.cpp: nExtCoinType = 1669, which MATCHES the SLIP-44 registration of 1669 — the only coin in this set where the project and the registry agree, so there is nothing to scan as an alternate.",
     "bytesSource": "src/kernel/chainparams.cpp (50/112) + the live daemon accepting a derived address via validateaddress, with a cross-chain address rejected as control",
-    "esplora": "https://coin.blockle.org/mewc",
+    "esplora": "https://blockle.org/mewc",
     "balanceStrategy": "addrindex",
     "note": "Its source sets bech32_hrp = \"mewc\", but an hrp being present does not imply segwit activation and its daemon could not be asked. Legacy P2PKH is valid either way, so that is what the wallet uses until a bech32 address can be verified."
   },
@@ -89,7 +89,7 @@
     "pathCandidates": ["m/44'/200'/0'/0", "m/44'/10226'/0'/0"],
     "pathSource": "chainparams.cpp CMainParams: nExtCoinType = strExtCoinType.empty() ? 200 : ... — CONFLICTS with SLIP-44's registered 10226",
     "bytesSource": "daemon-minted address + chainparams.cpp (60/128)",
-    "esplora": "https://coin.blockle.org/rtm",
+    "esplora": "https://blockle.org/rtm",
     "balanceStrategy": "addrindex",
     "note": "THE CONFLICT CASE. Raptoreum Core derives under 200; wallets that followed the SLIP-44 registration use 10226. Preferring 200 matches the official desktop wallet, which is where an RTM holder's seed most likely comes from, but both must be scanned."
   },
@@ -106,7 +106,7 @@
     "pathCandidates": ["m/44'/3434'/0'/0", "m/44'/3'/0'/0"],
     "pathSource": "no nExtCoinType in chainparams.cpp — Pepecoin Core is not a BIP44 wallet. SLIP-44 lists 'Pepecoin Core' at 3434 (symbol PEPE); m/44'/3'/0'/0 is included because its EXT keys are Dogecoin's (0x02facafd/0x02fac398), so a Doge-lineage wallet may derive it under coin type 3.",
     "bytesSource": "daemon-minted address + chainparams.cpp (56/158)",
-    "esplora": "https://coin.blockle.org/pep",
+    "esplora": "https://blockle.org/pep",
     "balanceStrategy": "watch",
     "note": "watch strategy: an address is tracked only from its first query — see services/coin-esplora."
   },
@@ -123,7 +123,7 @@
     "pathCandidates": ["m/44'/1668'/0'/0"],
     "pathSource": "chainparams.cpp: nExtCoinType = 1668, with the comment \"NEOXA BIP44 cointype in mainnet is '1668'\". Unregistered in SLIP-44, so there is no competing value.",
     "bytesSource": "daemon-minted address + chainparams.cpp (38/112)",
-    "esplora": "https://coin.blockle.org/neox",
+    "esplora": "https://blockle.org/neox",
     "balanceStrategy": "addrindex",
     "note": "The cleanest of the set: stated in code AND in a comment, with nothing to conflict with."
   },
@@ -140,7 +140,7 @@
     "pathCandidates": ["m/44'/3'/0'/0", "m/44'/1'/0'/0"],
     "pathSource": "no nExtCoinType in chainparams.cpp and unregistered in SLIP-44, so there is NO authoritative path. Dogecoin's coin type 3 is preferred because this is a Dogecoin fork that kept Dogecoin's EXT key bytes (0x02fac398) and address bytes.",
     "bytesSource": "daemon-minted address + chainparams.cpp (30/158)",
-    "esplora": "https://coin.blockle.org/dingo",
+    "esplora": "https://blockle.org/dingo",
     "balanceStrategy": "watch",
     "note": "WEAKEST PATH EVIDENCE of the set — chosen by lineage, not stated anywhere. Its 0x1e/0x9e bytes ARE Dogecoin's, which also means a DOGE address validates against Dingocoin's rules: the wallet must never treat the two as interchangeable, or someone sends DOGE to a Dingo address and loses it."
   }
