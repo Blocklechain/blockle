@@ -1237,7 +1237,48 @@ fn build_funded_tx(
     Ok(tx)
 }
 
+/// Drop mempool entries the chain has already absorbed.
+///
+/// A transaction is still pending exactly while EVERY input it spends is still
+/// unspent on chain; once it confirms, those outpoints are gone from the UTXO
+/// set. Keeping confirmed entries would be harmless for coin selection — their
+/// inputs really are spent — but the file would grow without bound on a datadir
+/// that only ever runs CLI commands, and a mempool full of history is the kind
+/// of thing that later reads as a bug.
+fn prune_confirmed(chain: &Chain, mempool: &mut Vec<Transaction>) {
+    mempool.retain(|tx| {
+        // A coinbase or a shielded-only transaction has no transparent inputs
+        // to test, so it is kept and left to the node's own pruning.
+        tx.inputs.is_empty()
+            || tx.inputs.iter().any(|i| chain.utxos.contains_key(&i.prev))
+    });
+}
+
 /// Hand a signed transaction to a running node, or queue it locally.
+///
+/// EITHER WAY IT IS RECORDED LOCALLY, and that is a fix rather than a detail.
+///
+/// THE BUG. This used to record the transaction in the local mempool ONLY on
+/// the `None` branch. `build_funded_tx` reads that mempool to know which of
+/// our coins are already committed — see the "SPEND OWN UNCONFIRMED CHANGE"
+/// comment there — so with `--node`, the wallet forgot a transaction the
+/// instant it was broadcast. The next send then selected the SAME input, which
+/// is a double spend: the network keeps whichever it saw first and silently
+/// drops the second. The CLI meanwhile printed "submitted via node" and a
+/// txid, so from the outside it looked sent.
+///
+/// It cost a real sequence. The Intelligence pool's epoch duties are three
+/// transactions in order — commit, reveal, proof-of-validation. The commit
+/// confirmed in the next block; the reveal and the proof were built against
+/// the same stale view, conflicted with the commit, and were never mined. No
+/// error anywhere: the handlers for those actions are deliberate no-ops on
+/// failure, so there was nothing to reject and nothing to log. The pool stayed
+/// undistributed and the cause looked like a timing problem for hours.
+///
+/// The v0.7.7 "two sends per block" work fixed exactly this class of problem
+/// for the locally-queued path and did not reach this one, which is why it
+/// survived: the local path was tested, and `--node` is what every scripted
+/// caller uses.
 fn submit_tx(
     datadir: &Path,
     chain: &Chain,
@@ -1248,11 +1289,18 @@ fn submit_tx(
     let txid = tx.txid();
     match node {
         Some(addr) => {
+            // RECORDED ONLY AFTER A SUCCESSFUL PUSH. If the broadcast fails,
+            // the transaction is nowhere, and remembering it as pending would
+            // make the wallet refuse to reuse coins that were never spent.
             p2p::push_tx_to_node(&addr, &chain.params, &tx)?;
             if !json_mode() { println!("submitted via node {addr}"); }
+            mempool.push(tx);
+            prune_confirmed(chain, mempool);
+            storage::save_mempool(datadir, mempool)?;
         }
         None => {
             mempool.push(tx);
+            prune_confirmed(chain, mempool);
             storage::save_mempool(datadir, mempool)?;
             if !json_mode() { println!("queued in local mempool"); }
         }
@@ -2586,3 +2634,55 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod submit_tx_tests {
+    use super::*;
+    use blockle_core::{OutPoint, TxInput, TxOutput};
+
+    fn tx_spending(prev: OutPoint) -> Transaction {
+        Transaction {
+            inputs: vec![TxInput { prev, pubkey: vec![], signature: vec![] }],
+            outputs: vec![TxOutput { recipient: [9u8; 32], amount: 1 }],
+            ..Default::default()
+        }
+    }
+
+    /// THE BUG THAT ATE TWO TRANSACTIONS. `prune_confirmed` is what keeps the
+    /// local mempool — now written on BOTH submit paths — from growing
+    /// without bound, and it must tell "still pending" from "already mined"
+    /// by the only evidence that cannot lie: whether the inputs are still
+    /// unspent on chain.
+    #[test]
+    fn a_pending_tx_is_kept_and_a_confirmed_one_is_dropped() {
+        let mut chain = Chain::new(ChainParams::regtest());
+        let unspent = OutPoint { txid: [1u8; 32], index: 0 };
+        let spent = OutPoint { txid: [2u8; 32], index: 0 };
+        // Only `unspent` is in the UTXO set, which is exactly the state after
+        // the transaction spending `spent` confirmed.
+        chain.utxos.insert(
+            unspent,
+            blockle_chain::UtxoEntry { recipient: [9u8; 32], amount: 10, height: 1 },
+        );
+
+        let mut mempool = vec![tx_spending(spent), tx_spending(unspent)];
+        prune_confirmed(&chain, &mut mempool);
+
+        assert_eq!(mempool.len(), 1, "the confirmed transaction must be dropped");
+        assert_eq!(
+            mempool[0].inputs[0].prev, unspent,
+            "the one still pending must survive — dropping it would let the \
+             next send reuse a coin it has already committed, which is the \
+             double spend this whole mechanism exists to prevent"
+        );
+    }
+
+    /// A transaction with no transparent inputs has nothing to test, so it is
+    /// kept rather than silently discarded.
+    #[test]
+    fn a_tx_with_no_transparent_inputs_is_kept() {
+        let chain = Chain::new(ChainParams::regtest());
+        let mut mempool = vec![Transaction::default()];
+        prune_confirmed(&chain, &mut mempool);
+        assert_eq!(mempool.len(), 1);
+    }
+}

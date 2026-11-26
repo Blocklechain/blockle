@@ -795,7 +795,104 @@ export class Venue {
 	 * very int64 cast this column exists to escape, and would write a clamped
 	 * key for exactly the prices that matter.
 	 */
+	/**
+	 * DROP `ord.account_id REFERENCES account(id)` — THE CONSTRAINT THAT MADE
+	 * EVERY ORDER IMPOSSIBLE.
+	 *
+	 * `account` is the venue's OWN email-and-password table, written only by
+	 * the local signup path. The exchange no longer has a login of its own: it
+	 * authenticates with the Blockle accounts service, and the id it knows a
+	 * customer by is that service's id. So an authenticated customer has no
+	 * row in `account`, the insert violated the foreign key, and the venue
+	 * answered "FOREIGN KEY constraint failed" to every limit order anyone
+	 * ever placed. Not a rejection anyone could act on, and nothing in the
+	 * order path to point at.
+	 *
+	 * IT WAS INVISIBLE FOR TWO REASONS. The 4 rows in `account` are legacy
+	 * local signups whose `u_…` ids DO satisfy the key, so every test fixture
+	 * and every manual check that created its account the old way passed.
+	 * And `PRAGMA foreign_keys` is OFF by default in the sqlite3 CLI, so
+	 * inspecting the database by hand enforces nothing — while better-sqlite3
+	 * turns it ON, which is what the service actually runs.
+	 *
+	 * WHY DROPPING IT IS RIGHT, rather than writing a shadow `account` row per
+	 * Blockle customer: that table's `email`, `pw_salt` and `pw_hash` are NOT
+	 * NULL, so a shadow row means inventing credential columns for someone who
+	 * has none. A fake password hash sitting in a credentials table is worse
+	 * than no constraint — it is a thing a later reader may take for a real
+	 * credential. Identity belongs to the accounts service; the venue's job is
+	 * to record which id an order belongs to, not to re-authenticate it.
+	 *
+	 * SQLite cannot drop a constraint in place, so this is the documented
+	 * twelve-step rebuild, narrowed to what it needs: the foreign-key
+	 * enforcement is suspended (it cannot be changed inside a transaction, so
+	 * that happens outside), the table is rebuilt with identical columns, rows
+	 * are copied, and the indexes are recreated. Guarded on the DDL text so it
+	 * runs exactly once and is a no-op on a database that never had the key.
+	 */
+	private dropLegacyAccountForeignKey(): void {
+		const row = this.db
+			.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ord'`)
+			.get() as { sql: string } | undefined;
+		// No table yet (fresh database — SCHEMA already created it without the
+		// key is not the case, so this is belt and braces) or already migrated.
+		if (row === undefined) return;
+		if (!/REFERENCES\s+account\s*\(/i.test(row.sql)) return;
+
+		const before = (
+			this.db.prepare(`SELECT COUNT(*) AS c FROM ord`).get() as { c: number }
+		).c;
+
+		// OUTSIDE the transaction: SQLite refuses to change this pragma while
+		// one is open, and a rebuild with enforcement on would reject the copy
+		// for exactly the rows this migration exists to make legal.
+		this.db.pragma("foreign_keys = OFF");
+		try {
+			this.db.transaction(() => {
+				this.db.exec(`
+					CREATE TABLE ord_rebuilt (
+					  id          TEXT PRIMARY KEY,
+					  account_id  TEXT NOT NULL,
+					  market      TEXT NOT NULL,
+					  side        TEXT NOT NULL,
+					  price       TEXT NOT NULL,
+					  price_key   TEXT,
+					  base_total  TEXT NOT NULL,
+					  base_filled TEXT NOT NULL DEFAULT '0',
+					  state       TEXT NOT NULL,
+					  created_at  TEXT NOT NULL,
+					  seq         INTEGER
+					);
+					INSERT INTO ord_rebuilt
+					  SELECT id, account_id, market, side, price,
+					         price_key, base_total, base_filled, state, created_at, seq
+					    FROM ord;
+					DROP TABLE ord;
+					ALTER TABLE ord_rebuilt RENAME TO ord;
+					CREATE INDEX IF NOT EXISTS idx_ord_book ON ord(market, side, state);
+					CREATE INDEX IF NOT EXISTS idx_ord_price
+					  ON ord(market, side, state, price_key);
+				`);
+			})();
+		} finally {
+			this.db.pragma("foreign_keys = ON");
+		}
+
+		const after = (
+			this.db.prepare(`SELECT COUNT(*) AS c FROM ord`).get() as { c: number }
+		).c;
+		// NOT AN ASSERT FOR ITS OWN SAKE. Losing a resting order silently means
+		// losing a customer's reserved collateral with it.
+		if (after !== before) {
+			throw new VenueError(
+				`the ord rebuild changed the row count (${before} -> ${after}). ` +
+					"Refusing to continue: a lost order is lost reserved collateral.",
+			);
+		}
+	}
+
 	private migrate(): void {
+		this.dropLegacyAccountForeignKey();
 		const cols = (
 			this.db.prepare(`PRAGMA table_info(ord)`).all() as { name: string }[]
 		).map((c) => c.name);
