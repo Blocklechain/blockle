@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'state/app_state.dart';
 import 'state/exchange_controller.dart';
 import 'services/dapp_link.dart';
+import 'services/exchange_link.dart';
 import 'services/open_url.dart' as ou;
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
@@ -90,14 +91,20 @@ void main() {
 void _initDappDeepLinks(AppState app) {
   final link = DappLink(app, appNavigatorKey);
   final appLinks = AppLinks();
+  // `blockle://exchange/<section>[/<MARKET>]` is handled FIRST and short-
+  // circuits: it is navigation, not a signing handshake, and DappLink would
+  // simply ignore it. Anything that is not an exchange link falls through
+  // unchanged.
+  void route(Uri uri) {
+    if (handleExchangeLink(uri, app)) return;
+    link.handleUri(uri);
+  }
+
   // Links received while the app is already running.
-  appLinks.uriLinkStream.listen(
-    (uri) => link.handleUri(uri),
-    onError: (_) {},
-  );
+  appLinks.uriLinkStream.listen(route, onError: (_) {});
   // The link that launched the app from cold start (if any).
   appLinks.getInitialLink().then((uri) {
-    if (uri != null) link.handleUri(uri);
+    if (uri != null) route(uri);
   }).catchError((_) {});
 }
 

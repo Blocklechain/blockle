@@ -84,6 +84,33 @@ class AppState extends ChangeNotifier {
   /// Index of the in-app Browser tab in HomeScreen's navigation.
   static const browserTabIndex = 3;
 
+  /// Index of the Exchange tab in HomeScreen's navigation.
+  static const exchangeTabIndex = 9;
+
+  /// A sub-section of the Exchange tab a deep link asked for, consumed once by
+  /// the exchange shell.
+  ///
+  /// The web exchange is deep-linkable by hash (`#/withdraw`,
+  /// `#/trade/RTM-USDT`) and losing that on the phone would mean no way to
+  /// hand someone a link to a market or to the withdrawal screen. The scheme
+  /// stays `blockle` with NO underscore — underscores are illegal in a
+  /// CFBundleURLScheme and cost two uploads to ITMS-90158 once already.
+  String? pendingExchangeSection;
+  String? pendingExchangeMarket;
+
+  /// Switch to the Exchange tab and open [section] (and optionally [market]).
+  void openExchange(String section, {String? market}) {
+    pendingExchangeSection = section;
+    pendingExchangeMarket = market;
+    tabIndex = exchangeTabIndex;
+    notifyListeners();
+  }
+
+  void consumedExchangeTarget() {
+    pendingExchangeSection = null;
+    pendingExchangeMarket = null;
+  }
+
   /// Set when the browser was opened to complete a CHECKOUT, so the page
   /// can offer to fill the delivery details on arrival instead of making
   /// the user hunt through a menu while standing in a payment form.

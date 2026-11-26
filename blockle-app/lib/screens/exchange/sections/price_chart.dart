@@ -103,7 +103,7 @@ class PriceChart extends StatelessWidget {
     final rising = series.last >= series.first;
     final accent = rising ? Bk.good : Bk.bad;
 
-    final plotH = kPriceChartHeight - _kPadV * 2;
+    const plotH = kPriceChartHeight - _kPadV * 2;
     double yOf(double v) =>
         flat ? _kPadV + plotH / 2 : _kPadV + (1 - (v - lo) / (hi - lo)) * plotH;
 

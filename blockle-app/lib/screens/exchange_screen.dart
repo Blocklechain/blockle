@@ -1,28 +1,51 @@
 // screens/exchange_screen.dart — the Blockle exchange, in the app.
 //
-// The same venue as exchange.blockle.org and the same order books: markets,
-// depth, the trade tape, your orders and your exchange balance.
+// THE SAME VENUE AS exchange.blockle.org, CONDENSED ONTO ONE TAB. The web
+// exchange is eleven screens behind a left rail; this is that whole surface
+// inside the app's existing Exchange tab (nav index 9 — unchanged, nothing is
+// renumbered), with a permanent 60pt icon rail up the left of the tab's body
+// and the sections beside it.
 //
-// THE CENTRAL IDEA THE UI HAS TO CARRY. There are two pots of money here and
+// WHAT CHANGED FOR THE USER, CONCRETELY. This tab used to be ONE flat scrolling
+// column: the gate banner, then a two-pots explainer, then a market chip strip,
+// then the book, then the order form, then balances, then open orders. Placing
+// an order meant scrolling past two explainers every single time, and
+// withdrawing was not reachable at all. Now every destination is one tap from
+// anywhere, at a fixed screen position, and the state that needs attention
+// shows as a dot on the rail BEFORE you tap.
+//
+// THE CENTRAL IDEA THE UI STILL HAS TO CARRY. There are two pots of money and
 // they are not the same pot. The Wallet tab holds coins this device has keys
-// for. The exchange holds a balance for your Blockle account. To trade, you
-// SEND from the wallet to the exchange's deposit address — the app never moves
-// it for you. Every balance figure on this screen is therefore labelled as
-// exchange-held, and the deposit sheet is the only bridge.
+// for; the exchange holds a balance for your Blockle account. To trade you SEND
+// from the wallet to the exchange's deposit address — the app never moves it
+// for you. That explainer now lives on the BALANCE section, which is what it
+// explains, instead of being paid for on every visit.
 //
-// AND IT MUST NOT OVERSTATE THE VENUE. The exchange publishes its own gate
-// (live / mainnetEnabled / legalReviewCompleted). Until all three are true the
-// order form is disabled and the screen says so plainly, because a trading UI
-// that looks operational on a venue which is not is the kind of thing people
-// lose money to.
+// AND IT MUST NOT OVERSTATE THE VENUE. The environment badge fails closed: it
+// reads TESTNET unless /public/status says live, and the order form stays
+// disabled until the venue says every gate is open.
+//
+// NOTHING HERE OFFERS A PATH AROUND A SERVER GATE. Withdrawals need an enrolled
+// authenticator and an allowlisted destination with a 24h cooling-off period;
+// those are refusals the venue makes, and the app's job is to say so plainly,
+// not to route around them.
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../services/exchange_client.dart';
+import '../state/app_state.dart';
 import '../state/exchange_controller.dart';
-import '../widgets/chain_icon.dart';
+import '../theme.dart';
+import 'exchange/coin_names.dart';
+import 'exchange/exchange_rail.dart';
+import 'exchange/exchange_ui.dart';
+import 'exchange/section_table.dart';
+import 'exchange/sections/balance_section.dart';
+import 'exchange/sections/deposit_section.dart';
+import 'exchange/sections/markets_section.dart';
+import 'exchange/sections/orders_section.dart';
+import 'exchange/sections/pending_sections.dart';
+import 'exchange/sections/trade_section.dart';
 
 class ExchangeScreen extends StatefulWidget {
   const ExchangeScreen({super.key});
@@ -31,32 +54,125 @@ class ExchangeScreen extends StatefulWidget {
   State<ExchangeScreen> createState() => _ExchangeScreenState();
 }
 
-class _ExchangeScreenState extends State<ExchangeScreen> {
+class _ExchangeScreenState extends State<ExchangeScreen>
+    with WidgetsBindingObserver {
   bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // The poll is torn down when the app goes to the background: a phone in a
+    // pocket hammering a venue every three seconds is someone's battery and
+    // someone else's rate limit.
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// The controller, captured while the element is still mounted.
+  ///
+  /// `dispose()` MUST NOT reach for an InheritedWidget: by then this element is
+  /// deactivated and `context.read` throws "looking up a deactivated widget's
+  /// ancestor is unsafe". The symptom is a screen that cannot be left — in a
+  /// test it is a thrown exception during teardown, and in the app it is a red
+  /// screen on tab change — and the fix is to hold the reference from the last
+  /// point at which looking it up is legal.
+  ExchangeController? _held;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final c = context.read<ExchangeController>();
+    _held = c;
     if (_started) return;
     _started = true;
-    final c = context.read<ExchangeController>();
-    // Fire-and-forget: the screen renders its loading and error states.
-    c.loadMarkets();
-    c.loadAccount();
-    c.startPolling();
+    // AFTER THE FRAME, not during it.
+    //
+    // Every one of these loaders calls notifyListeners() synchronously before
+    // its first await — it has to, so the screen can show a spinner — and
+    // didChangeDependencies runs INSIDE build. Calling them here directly
+    // marks the provider's element dirty mid-build, which Flutter asserts on
+    // ("setState() called during build"). One frame's delay costs nothing
+    // visible and is the difference between a screen that opens and one that
+    // throws on arrival.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // Fire-and-forget: every section renders its own loading and error states.
+      c.loadMarkets();
+      c.loadAccount();
+      c.loadFees();
+      c.loadBadges();
+      c.startPolling();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final c = _held;
+    if (c == null) return;
+    if (state == AppLifecycleState.resumed) {
+      c.startPolling();
+      c.loadBadges();
+    } else {
+      c.stopPolling();
+    }
   }
 
   @override
   void dispose() {
-    // The controller is app-wide; only this screen's polling stops.
-    context.read<ExchangeController>().stopPolling();
+    WidgetsBinding.instance.removeObserver(this);
+    // The controller is app-wide; only this screen's polling stops. Read from
+    // the captured reference, never from the context — see [_held].
+    _held?.stopPolling();
     super.dispose();
+  }
+
+  /// Apply a `blockle://exchange/<section>[/<MARKET>]` arrival, once.
+  ///
+  /// A LINK IS UNTRUSTED INPUT. It can be fired at the app from any web page, a
+  /// QR code or an iMessage, and the market it names is an arbitrary string.
+  /// `blockle://exchange/trade/BLOCK-USDT` used to be honoured verbatim, which
+  /// put "Last traded at 0.0412 USDT" in the TRADE header and `BLOCK/USDT
+  /// 0.0412` in the persistent top strip of EVERY section — a US-dollar price
+  /// for BLOCK, the one thing this app does not do, arriving through the single
+  /// entry point that did not consult [exchangeMarketAllowed].
+  ///
+  /// So a market this app may not price does not open TRADE on something else
+  /// either: it lands on MARKETS, which is a place the user can act from.
+  void _consumeDeepLink(AppState app, ExchangeController c) {
+    final want = app.pendingExchangeSection;
+    if (want == null) return;
+    final market = app.pendingExchangeMarket;
+    app.consumedExchangeTarget();
+    final sec = exchangeSectionById(want);
+    if (sec == null) return;
+    if (market != null && market.isNotEmpty) {
+      if (!exchangeMarketAllowed(market)) {
+        c.setSection('markets');
+        return;
+      }
+      c.selectMarket(market);
+    }
+    c.setSection(sec.id);
+  }
+
+  void _go(ExchangeController c, String sectionId) => c.setSection(sectionId);
+
+  void _tradeMarket(ExchangeController c, String market) {
+    c.selectMarket(market);
+    c.setSection('trade');
   }
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return Consumer<ExchangeController>(
       builder: (context, c, _) {
+        // A deep link may land while this tab is already built, so it is
+        // consumed after the frame rather than during it.
+        if (app.pendingExchangeSection != null) {
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _consumeDeepLink(app, c));
+        }
+        final section = exchangeSectionOrDefault(c.section);
         return Scaffold(
           appBar: AppBar(
             title: const Text('Exchange'),
@@ -67,598 +183,275 @@ class _ExchangeScreenState extends State<ExchangeScreen> {
                 onPressed: () {
                   c.loadMarkets();
                   c.loadAccount();
+                  c.loadBadges();
                 },
               ),
             ],
           ),
-          body: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
-            children: [
-              _GateBanner(c: c),
-              const SizedBox(height: 12),
-              const _TwoPotsNote(),
-              const SizedBox(height: 16),
-              _MarketPicker(c: c),
-              const SizedBox(height: 16),
-              if (c.selected != null) ...[
-                _BookAndTape(c: c),
-                const SizedBox(height: 16),
-                _OrderForm(c: c),
-                const SizedBox(height: 16),
-              ],
-              _Balances(c: c),
-              const SizedBox(height: 16),
-              _OpenOrders(c: c),
-            ],
+          body: LayoutBuilder(
+            builder: (context, box) {
+              // ONE BREAKPOINT. Below it the rail is 60pt of icons; at and
+              // above it (iPad, Stage Manager) it expands to 200pt with the
+              // full names and numeric badges — generated from the same table,
+              // so there is no second implementation to keep in step.
+              final expanded = box.maxWidth >= kExpandedRailMinWidth;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ExchangeRail(
+                    selectedId: section.id,
+                    badges: _badges(c),
+                    expanded: expanded,
+                    onSelect: (s) => _go(c, s.id),
+                  ),
+                  const VerticalDivider(width: 1, thickness: 1, color: Bk.line),
+                  Expanded(
+                    // The rail paid for the LEFT inset itself; the content pane
+                    // picks up the right and bottom ones. The rail sits outside
+                    // anything that reads viewInsets.bottom, so a raised
+                    // keyboard shrinks this pane and leaves the rail at exactly
+                    // the same pixel — the whole point of a persistent rail is
+                    // that the tap target does not move.
+                    child: SafeArea(
+                      left: false,
+                      top: false,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _TopStrip(c: c),
+                          const Divider(height: 1, thickness: 1, color: Bk.line),
+                          Expanded(child: _content(c, section)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         );
       },
     );
   }
+
+  /// Every dot on the rail, from the same reads the sections themselves use.
+  static ExchangeBadgeState _badges(ExchangeController c) => ExchangeBadgeState(
+        ordersWorking: c.ordersWorking,
+        depositsConfirming: c.depositsWaiting,
+        laddersResting: c.laddersOpen,
+        liveApiKeys: c.apiKeysLive,
+        twoFactorEnrolled: c.twoFactorOn,
+        // The venue requires an allowlisted destination (WD_REQUIRE_ALLOWLIST
+        // is true), and -1 means "not read yet" rather than "none".
+        allowlistRequired: c.allowlistCount < 0 ? null : true,
+        allowlistEntries: c.allowlistCount < 0 ? null : c.allowlistCount,
+      );
+
+  /// THE SWITCH AND THE RAIL READ THE SAME TABLE, so a section cannot exist in
+  /// one and be missing from the other.
+  Widget _content(ExchangeController c, ExchangeSection s) {
+    // Signed-out treatment is PER SECTION, not the web's full-screen curtain,
+    // precisely so the rail stays usable while signed out.
+    if (s.authRequired && !c.signedIn) return ExAuthGate(section: s);
+
+    return switch (s.id) {
+      'markets' => MarketsSection(c: c, onTrade: (m) => _tradeMarket(c, m)),
+      'trade' => TradeSection(
+          c: c,
+          onPickMarket: () => _go(c, 'markets'),
+        ),
+      'orders' => OrdersSection(c: c),
+      'balances' => BalanceSection(
+          c: c,
+          onDeposit: () => _go(c, 'deposit'),
+          onWithdraw: () => _go(c, 'withdraw'),
+          onTrade: (m) => _tradeMarket(c, m),
+        ),
+      'deposit' => DepositSection(c: c),
+      'withdraw' => const WithdrawPending(),
+      'liquidity' => const LaddersPending(),
+      'fees' => FeesPending(c: c),
+      // Their own screens now, as on the web, instead of being buried inside
+      // "The venue" and Account where nobody would find them.
+      'listing' => ListingSection(c: c),
+      'api' => ApiSection(c: c),
+      'account' => AccountPending(c: c),
+      // Unreachable while the table and this switch agree — and it is a
+      // readable failure rather than a crash if they ever do not.
+      _ => ExPlaceholder(
+          title: s.name,
+          summary: 'This section has no screen wired to it.',
+        ),
+    };
+  }
 }
 
-/// What the venue says about itself, verbatim.
-class _GateBanner extends StatelessWidget {
-  const _GateBanner({required this.c});
+/// The persistent line under the app bar.
+///
+/// The web keeps Market / Last / Bid / Ask / Spread / Environment / Fees /
+/// identity visible from every screen. At 299pt of content width that is not a
+/// row, so it compresses to one tappable 30pt line: the fail-closed environment
+/// pill, the market, its last price, and the maker/taker figures. Bid and ask
+/// drop out — they are two lines away on TRADE, and the spread is the figure
+/// that actually says whether the book is worth hitting. The signed-in identity
+/// moves to the ACCOUNT rail item, which is where anyone would look for it.
+class _TopStrip extends StatelessWidget {
+  const _TopStrip({required this.c});
   final ExchangeController c;
 
   @override
   Widget build(BuildContext context) {
     final s = c.status;
-    if (s == null) {
-      final err = c.marketsError;
-      if (err == null) return const SizedBox.shrink();
-      return _Card(
-        tone: _Tone.bad,
-        child: Text('The exchange could not be reached: $err'),
-      );
-    }
-    if (s.tradable) {
-      return _Card(
-        tone: _Tone.good,
-        child: Text('Live on ${s.network}.'),
-      );
-    }
-    // Name the specific gates that are shut. "Coming soon" tells nobody
-    // anything; a list of what is outstanding is checkable.
-    final shut = <String>[
-      if (!s.live) 'the venue is not open',
-      if (!s.mainnetEnabled) 'mainnet is not enabled',
-      if (!s.legalReviewCompleted) 'legal review is not complete',
-    ];
-    return _Card(
-      tone: _Tone.warn,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Not open for trading yet (${s.network}).',
-              style: const TextStyle(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          Text('Outstanding: ${shut.join('; ')}.'),
-          const SizedBox(height: 4),
-          const Text(
-            'You can look at the markets and the order books. Placing an '
-            'order is disabled until the venue is open.',
-          ),
-        ],
-      ),
-    );
-  }
-}
+    final live = s?.live == true; // FAIL CLOSED: unknown reads as not live.
+    final m = c.selectedMarket;
+    final f = c.fees;
 
-class _TwoPotsNote extends StatelessWidget {
-  const _TwoPotsNote();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _Card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Your wallet and your exchange balance are separate',
-              style: TextStyle(fontWeight: FontWeight.w600)),
-          SizedBox(height: 6),
-          Text(
-            'The Wallet tab holds coins only you have the keys for. To trade a '
-            'coin here, send it from your wallet to your exchange deposit '
-            'address — tap a balance below to get it. Nothing is moved for you.',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MarketPicker extends StatelessWidget {
-  const _MarketPicker({required this.c});
-  final ExchangeController c;
-
-  @override
-  Widget build(BuildContext context) {
-    if (c.loadingMarkets && c.markets.isEmpty) {
-      return const Center(child: Padding(
-        padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-    }
-    if (c.markets.isEmpty) {
-      return _Card(
-        tone: c.marketsError == null ? _Tone.plain : _Tone.bad,
-        child: Text(c.marketsError ?? 'No markets are listed yet.'),
-      );
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Markets', style: TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        ...c.markets.map((m) {
-          final sel = m.id == c.selected;
-          return Card(
-            margin: const EdgeInsets.only(bottom: 6),
-            color: sel ? Theme.of(context).colorScheme.primaryContainer : null,
-            child: ListTile(
-              leading: ChainIcon(m.base, symbol: m.base, radius: 14),
-              title: Text(m.pair),
-              subtitle: Text(_priceLine(m)),
-              trailing: sel ? const Icon(Icons.check) : null,
-              onTap: () => c.selectMarket(m.id),
-            ),
-          );
-        }),
-      ],
-    );
-  }
-
-  /// NULL IS NOT ZERO. A market that has never traded says so.
-  static String _priceLine(ExchangeMarket m) {
-    final parts = <String>[];
-    parts.add(m.last == null ? 'no trades yet' : 'last ${m.last}');
-    if (m.bid != null) parts.add('bid ${m.bid}');
-    if (m.ask != null) parts.add('ask ${m.ask}');
-    return parts.join('  ·  ');
-  }
-}
-
-class _BookAndTape extends StatelessWidget {
-  const _BookAndTape({required this.c});
-  final ExchangeController c;
-
-  @override
-  Widget build(BuildContext context) {
-    if (c.loadingMarket && c.book == null) {
-      return const Center(child: Padding(
-        padding: EdgeInsets.all(16), child: CircularProgressIndicator()));
-    }
-    final err = c.marketError;
-    if (err != null) {
-      return _Card(tone: _Tone.bad, child: Text('Order book unavailable: $err'));
-    }
-    final b = c.book;
-    if (b == null || b.isEmpty) {
-      return _Card(
-        child: Text(
-          'No orders on ${c.selected} yet. An empty book is not a price — '
-          'nothing here is quoting.',
-        ),
-      );
-    }
-    final rows = <Widget>[];
-    final depth = b.asks.length > 8 ? 8 : b.asks.length;
-    // Asks descending above, bids below, the way a book is read.
-    for (var i = depth - 1; i >= 0; i--) {
-      rows.add(_level(context, b.asks[i], isBid: false));
-    }
-    rows.add(Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Text(
-        b.mid == null ? 'one-sided book — no mid' : 'mid ${b.mid}',
-        style: const TextStyle(fontWeight: FontWeight.w600),
-      ),
-    ));
-    final bd = b.bids.length > 8 ? 8 : b.bids.length;
-    for (var i = 0; i < bd; i++) {
-      rows.add(_level(context, b.bids[i], isBid: true));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Order book — ${c.selected}',
-            style: const TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        _Card(child: Column(children: rows)),
-        const SizedBox(height: 12),
-        const Text('Recent trades', style: TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        _Card(
-          child: c.trades.isEmpty
-              ? const Text('No trades yet.')
-              : Column(
-                  children: c.trades.take(10).map((t) {
-                    final side = (t['takerSide'] ?? '').toString();
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('${t['price']}',
-                            style: TextStyle(
-                                color: side == 'buy' ? Colors.green : Colors.red)),
-                        Text('${t['base']}'),
-                      ],
-                    );
-                  }).toList(),
+    return InkWell(
+      onTap: () => _switchMarket(context, c),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 7, 12, 7),
+        // EVERY SIZING CHILD IS FLEXIBLE, and every figure can ellipsize.
+        //
+        // This row is drawn on every section of the tab, so one unbounded Text
+        // in it breaks the whole tab at once — and it did: an eight-decimal
+        // price on a BLOCK-quoted market is 17 monospace characters
+        // (BTC-BLOCK's live last is 90123456.78901234), which overflowed a
+        // 390pt phone by 123pt at DEFAULT text size. RenderFlex does not clip
+        // in release, so there was no debug stripe to notice — the trailing
+        // digits of a live price simply ran off the edge.
+        child: Row(children: [
+          ExPill(live ? 'LIVE' : 'TESTNET', tone: live ? ExTone.good : ExTone.warn),
+          const SizedBox(width: 8),
+          if (m == null)
+            const Expanded(
+              child: Text('No market selected',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: Bk.muted)),
+            )
+          else
+            Expanded(
+              child: Row(children: [
+                Flexible(
+                  child: Text(m.pair,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.w700)),
                 ),
-        ),
-      ],
+                const SizedBox(width: 8),
+                Flexible(
+                  // The venue's own decimal string, not the parsed double:
+                  // `0.00000012` must not render as `1.2e-7`. See figStr.
+                  child: Text(figStr(m.lastText, m.last),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: kMono.copyWith(fontSize: 12)),
+                ),
+              ]),
+            ),
+          if (f != null) ...[
+            const SizedBox(width: 8),
+            Text('${f.makerPct}/${f.takerPct}',
+                style: const TextStyle(fontSize: 11, color: Bk.faint)),
+          ],
+          const SizedBox(width: 4),
+          const Icon(Icons.unfold_more, size: 14, color: Bk.faint),
+        ]),
+      ),
     );
   }
 
-  Widget _level(BuildContext context, OrderLevel l, {required bool isBid}) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text('${l.price}',
-            style: TextStyle(color: isBid ? Colors.green : Colors.red)),
-        Text('${l.size}'),
-      ],
+  static void _switchMarket(BuildContext context, ExchangeController c) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _MarketSwitcher(c: c),
     );
   }
 }
 
-class _OrderForm extends StatefulWidget {
-  const _OrderForm({required this.c});
+/// The market switcher, as a sheet.
+///
+/// A sheet rather than the old horizontal chip strip because the list is about
+/// to get much longer — the venue's quote set is being expanded, and a chip
+/// strip hides entries off BOTH edges with no cue anyone obeys. It is also a
+/// horizontal gesture directly above a chart and a ladder that both want
+/// horizontal gestures.
+class _MarketSwitcher extends StatefulWidget {
+  const _MarketSwitcher({required this.c});
   final ExchangeController c;
+
   @override
-  State<_OrderForm> createState() => _OrderFormState();
+  State<_MarketSwitcher> createState() => _MarketSwitcherState();
 }
 
-class _OrderFormState extends State<_OrderForm> {
-  final _size = TextEditingController();
-  final _price = TextEditingController();
-  String _side = 'buy';
-  bool _busy = false;
-  String? _error;
+class _MarketSwitcherState extends State<_MarketSwitcher> {
+  final _q = TextEditingController();
 
   @override
   void dispose() {
-    _size.dispose();
-    _price.dispose();
+    _q.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final c = widget.c;
-    final m = c.selectedMarket;
-    if (m == null) return const SizedBox.shrink();
+    final needle = _q.text.trim().toUpperCase();
+    final rows = widget.c.visibleMarkets.where((m) {
+      if (needle.isEmpty) return true;
+      return m.id.toUpperCase().contains(needle) ||
+          coinName(m.base).toUpperCase().contains(needle);
+    }).toList();
 
-    // THREE SEPARATE REASONS the form can be unavailable, each said out loud.
-    if (!c.tradable) {
-      return _Card(
-        child: Text('Trading on ${m.pair} opens when the venue does.'),
-      );
-    }
-    if (!c.signedIn) {
-      return const _Card(
-        child: Text(
-          'Sign in to your Blockle account to place an order. The exchange '
-          'uses your Blockle account — it has no separate login.',
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Place an order — ${m.pair}',
-            style: const TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        _Card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'buy', label: Text('Buy')),
-                  ButtonSegment(value: 'sell', label: Text('Sell')),
-                ],
-                selected: {_side},
-                onSelectionChanged: (s) => setState(() => _side = s.first),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _size,
-                // Decimal text, not a number field: the amount is sent as a
-                // STRING and must never pass through a double.
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                decoration: InputDecoration(
-                  labelText: 'Amount (${m.base})',
-                  helperText: m.minBase == null ? null : 'minimum ${m.minBase}',
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _price,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                decoration: InputDecoration(labelText: 'Limit price (${m.quote})'),
-              ),
-              if (_error != null) ...[
-                const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
-              ],
-              const SizedBox(height: 12),
-              FilledButton(
-                onPressed: _busy ? null : _submit,
-                child: Text(_busy
-                    ? 'Placing…'
-                    : '${_side == 'buy' ? 'Buy' : 'Sell'} ${m.base}'),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _submit() async {
-    final c = widget.c;
-    final m = c.selectedMarket!;
-    final size = _size.text.trim();
-    final price = _price.text.trim();
-    if (size.isEmpty) {
-      setState(() => _error = 'Enter an amount.');
-      return;
-    }
-    if (price.isEmpty) {
-      setState(() => _error = 'Enter a limit price.');
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    final err = await c.placeOrder(
-      market: m.id,
-      side: _side,
-      type: 'limit',
-      size: size,
-      price: price,
-    );
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _error = err;
-    });
-    if (err == null) {
-      _size.clear();
-      _price.clear();
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Order placed.')));
-    }
-  }
-}
-
-class _Balances extends StatelessWidget {
-  const _Balances({required this.c});
-  final ExchangeController c;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!c.signedIn) {
-      return const _Card(
-        child: Text(
-          'Sign in to your Blockle account to see your exchange balance.',
-        ),
-      );
-    }
-    if (c.loadingAccount && c.balances.isEmpty && c.accountError == null) {
-      return const Center(child: Padding(
-        padding: EdgeInsets.all(16), child: CircularProgressIndicator()));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Held at the exchange',
-            style: TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        const Text(
-          'Not in your wallet. Tap a coin to get its deposit address.',
-          style: TextStyle(fontSize: 12),
-        ),
-        const SizedBox(height: 8),
-        // An error here NEVER renders as "you have nothing".
-        if (c.accountError != null)
-          _Card(
-            tone: _Tone.bad,
-            child: Text(
-              'Could not read your balance: ${c.accountError}. '
-              'This is a display problem — it says nothing about your funds.',
-            ),
-          ),
-        if (c.accountError == null && c.balances.isEmpty)
-          const _Card(
-              child: Text(
-                  'Nothing deposited yet. Send a coin from your wallet to start.')),
-        ...c.balances.map((b) => Card(
-              margin: const EdgeInsets.only(bottom: 6),
-              child: ListTile(
-                leading: ChainIcon(b.asset, symbol: b.asset, radius: 14),
-                title: Text('${b.asset}  ${b.available}'),
-                subtitle: Text(_sub(b)),
-                trailing: const Icon(Icons.call_received),
-                onTap: () => _showDeposit(context, b.asset),
-              ),
-            )),
-      ],
-    );
-  }
-
-  /// `reserved` is shown because "available" alone cannot explain why a
-  /// visible balance will not place an order.
-  static String _sub(ExchangeBalance b) {
-    if (b.reserved == '0' || b.reserved.isEmpty) return 'total ${b.total}';
-    return 'total ${b.total}  ·  ${b.reserved} held by open orders';
-  }
-
-  Future<void> _showDeposit(BuildContext context, String asset) async {
-    final c = context.read<ExchangeController>();
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => _DepositSheet(c: c, asset: asset),
-    );
-  }
-}
-
-/// The ONLY bridge between the wallet and the venue, and the user drives it.
-class _DepositSheet extends StatefulWidget {
-  const _DepositSheet({required this.c, required this.asset});
-  final ExchangeController c;
-  final String asset;
-  @override
-  State<_DepositSheet> createState() => _DepositSheetState();
-}
-
-class _DepositSheetState extends State<_DepositSheet> {
-  DepositTarget? _target;
-  String? _error;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.c.depositAddress(widget.asset).then((t) {
-      if (!mounted) return;
-      setState(() {
-        _target = t;
-        _loading = false;
-      });
-    }).catchError((Object e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e is ExchangeException ? e.message : e.toString();
-        _loading = false;
-      });
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Deposit ${widget.asset}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 12),
-          if (_loading) const Center(child: CircularProgressIndicator()),
-          if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
-          if (_target != null && !_target!.ready)
-            // The venue explains rather than guessing; so does this.
-            Text(_target!.reason ??
-                'The exchange is not issuing ${widget.asset} deposit '
-                    'addresses right now.'),
-          if (_target != null && _target!.ready) ...[
-            const Text(
-              'Send only this coin, only to this address, on this network. '
-              'A deposit to the wrong address or network cannot be recovered '
-              'by anyone.',
-            ),
-            const SizedBox(height: 12),
-            SelectableText(
-              _target!.address!,
-              style: const TextStyle(fontFamily: 'monospace'),
-            ),
-            if (_target!.network != null) ...[
-              const SizedBox(height: 6),
-              Text('Network: ${_target!.network}'),
-            ],
-            if (_target!.note != null) ...[
-              const SizedBox(height: 6),
-              Text(_target!.note!, style: const TextStyle(fontSize: 12)),
-            ],
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: _target!.address!));
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Address copied.')));
-              },
-              icon: const Icon(Icons.copy),
-              label: const Text('Copy address'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _OpenOrders extends StatelessWidget {
-  const _OpenOrders({required this.c});
-  final ExchangeController c;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!c.signedIn || c.orders.isEmpty) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Your open orders',
-            style: TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        ...c.orders.map((o) => Card(
-              margin: const EdgeInsets.only(bottom: 6),
-              child: ListTile(
-                title: Text('${o.side.toUpperCase()} ${o.size} ${o.market}'),
-                subtitle: Text(
-                  'at ${o.price}'
-                  '${o.filled == null ? '' : '  ·  filled ${o.filled}'}'
-                  '${o.status == null ? '' : '  ·  ${o.status}'}',
-                ),
-                trailing: IconButton(
-                  tooltip: 'Cancel',
-                  icon: const Icon(Icons.close),
-                  onPressed: () async {
-                    final err = await c.cancelOrder(o.id);
-                    if (err != null && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Could not cancel: $err')));
-                    }
-                  },
-                ),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.7,
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+            child: TextField(
+              controller: _q,
+              autofocus: false,
+              textCapitalization: TextCapitalization.characters,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                isDense: true,
+                prefixIcon: Icon(Icons.search, size: 20),
+                hintText: 'Pair or coin name',
               ),
-            )),
-      ],
-    );
-  }
-}
-
-enum _Tone { plain, good, warn, bad }
-
-class _Card extends StatelessWidget {
-  const _Card({required this.child, this.tone = _Tone.plain});
-  final Widget child;
-  final _Tone tone;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final bg = switch (tone) {
-      _Tone.good => cs.primaryContainer,
-      _Tone.warn => cs.tertiaryContainer,
-      _Tone.bad => cs.errorContainer,
-      _Tone.plain => cs.surfaceContainerHighest,
-    };
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          Expanded(
+            child: rows.isEmpty
+                ? const Center(child: Text('No market matches that.'))
+                : ListView.builder(
+                    itemCount: rows.length,
+                    itemBuilder: (ctx, i) {
+                      final m = rows[i];
+                      return ListTile(
+                        title: Text(m.pair),
+                        subtitle: Text(
+                          m.last == null
+                              ? 'no trades yet'
+                              : 'last ${figStr(m.lastText, m.last)} ${m.quote}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: m.id == widget.c.selected
+                            ? const Icon(Icons.check, color: Bk.accent)
+                            : null,
+                        onTap: () {
+                          widget.c.selectMarket(m.id);
+                          Navigator.of(ctx).pop();
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ]),
       ),
-      child: child,
     );
   }
 }

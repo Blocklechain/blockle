@@ -52,6 +52,14 @@ Future<HttpReply> httpSend(HttpReq req) async {
     case 'POST':
       r = await http.post(uri, headers: req.headers, body: req.body);
       break;
+    // DELETE is here for exactly one route: `DELETE /v1/api-keys/{id}` on the
+    // exchange, which revokes a programmatic key. Without it the only way to
+    // revoke from the app would be to not offer revocation at all — i.e. to
+    // let a leaked key keep trading because the client could not speak the
+    // verb. No adapter uses it.
+    case 'DELETE':
+      r = await http.delete(uri, headers: req.headers, body: req.body);
+      break;
     default:
       throw ArgumentError('unsupported method: ${req.method}');
   }
