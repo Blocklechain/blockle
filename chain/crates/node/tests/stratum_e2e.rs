@@ -119,8 +119,32 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
     .unwrap();
 
     let sub = read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(1))).clone();
+    /*
+     * BEHAVE LIKE A REAL MINER: derive the nonce2 width from what the pool
+     * advertised, rather than asserting a hardcoded 16.
+     *
+     * This test used to require a 16-byte nonce1, which is what the pool used
+     * to send — and that made it a test of the pool's current output instead of
+     * a test of the protocol. When the advertised length was shortened to 4 (so
+     * Z9-era firmware would accept the session at all), this failed, reporting
+     * a broken pool when nothing about share handling had changed.
+     *
+     * Deriving it means the test now exercises the contract that matters:
+     * whatever we advertise, a compliant miner's submission must verify. It
+     * passes at 4 and would pass again at 16.
+     */
+    let sess = sub["result"][0].as_str().expect("session id must be a string");
+    assert!(
+        hex::decode(sess).is_ok(),
+        "session id must be hex — the cgminer forks on these ASICs re-parse it: {sess}"
+    );
     let nonce1: Vec<u8> = hex::decode(sub["result"][1].as_str().unwrap()).unwrap();
-    assert_eq!(nonce1.len(), 16);
+    assert!(
+        (4..=16).contains(&nonce1.len()),
+        "advertised nonce1 must leave room for a 16..=28 byte nonce2, got {}",
+        nonce1.len()
+    );
+    let nonce2_len = 32 - nonce1.len();
     let auth = read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(2))).clone();
     assert_eq!(auth["result"], json!(true), "authorize rejected: {auth}");
 
@@ -152,13 +176,13 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
     };
     let input = header.equihash_input();
 
-    let mut found: Option<([u8; 16], Vec<u8>)> = None;
+    let mut found: Option<(Vec<u8>, Vec<u8>)> = None;
     'outer: for n2 in 0u64..8192 {
-        let mut nonce2 = [0u8; 16];
+        let mut nonce2 = vec![0u8; nonce2_len];
         nonce2[..8].copy_from_slice(&n2.to_le_bytes());
         let mut nonce = [0u8; 32];
-        nonce[..16].copy_from_slice(&nonce1);
-        nonce[16..].copy_from_slice(&nonce2);
+        nonce[..nonce1.len()].copy_from_slice(&nonce1);
+        nonce[nonce1.len()..].copy_from_slice(&nonce2);
         for sol in equihash::solve(&params.equihash, &input, &nonce) {
             header.nonce = nonce;
             header.solution = equihash::pack_solution(&params.equihash, &sol);

@@ -337,6 +337,8 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
         .unwrap_or_else(|_| "?".into());
     let client_id = state.next_client.fetch_add(1, Ordering::SeqCst);
     let mut nonce1 = [0u8; 16];
+    // LITTLE-endian, and load-bearing: ADVERTISED_NONCE1_LEN truncates this to
+    // its first bytes, so the varying end of the counter has to come first.
     nonce1[..8].copy_from_slice(&client_id.to_le_bytes());
 
     let mut write_half = match stream.try_clone() {
@@ -460,7 +462,46 @@ fn handle_request(
                 }
                 PoolMode::Solo => push_solo_job(state, client_id, state.opts.pool_address, true),
             }
-            Ok(json!(["blockle-session", hex::encode(nonce1)]))
+            /*
+             * THE SUBSCRIBE REPLY IS WHERE THE Z9 ACTUALLY DIED.
+             *
+             * Reported as "No servers could be used! Exiting." — which is a
+             * cgminer-family failure to establish the session AT ALL, upstream
+             * of ever submitting a share. The agent logging added above is what
+             * made it visible: the miner connects, subscribes as
+             * "cgminer/4.9.0", and hangs up IN THE SAME SECOND; retries once
+             * with no agent string; hangs up again; loops every 5s forever. It
+             * never reaches mining.authorize. So it read this reply and
+             * rejected it.
+             *
+             * Two things in the old reply `["blockle-session", <32 hex>]` are
+             * outside what the Equihash stratum ecosystem actually emits, and
+             * Z9-era firmware is strict about both:
+             *
+             * 1. SESSION ID WAS NOT HEX. Every ZEC-family pool sends a hex
+             *    session id, and these cgminer forks store and re-parse it as
+             *    hex; the literal ASCII "blockle-session" is not decodable.
+             *
+             * 2. NONCE1 WAS 16 BYTES. The convention on this family is a SHORT
+             *    extranonce1 — 4 bytes — with the miner taking nonce2 as the
+             *    remaining 28. Firmware sizes its nonce2 buffer from that and
+             *    rejects an over-long nonce1 rather than adapting.
+             *
+             * Truncating to 4 bytes is safe for uniqueness precisely because
+             * nonce1 is filled LITTLE-endian from the client counter, so the
+             * low four bytes are the part that varies: 2^32 concurrent
+             * connections before any reuse. Big-endian would have made every
+             * early miner's prefix all-zero and collided immediately.
+             *
+             * Nothing that works today breaks, because split_nonce infers the
+             * split from the nonce2 the miner sends rather than from what we
+             * advertised. A spec-correct miner now computes 32-4=28, sends 28,
+             * and reconstructs against nonce1[..4]; that path is tested.
+             */
+            Ok(json!([
+                hex::encode(SESSION_PREFIX),
+                hex::encode(&nonce1[..ADVERTISED_NONCE1_LEN])
+            ]))
         }
         "mining.authorize" => {
             let worker = params
@@ -772,12 +813,12 @@ fn record_share_and_retarget(state: &Arc<StratumState>, client_id: u64, block_t:
 ///
 /// THE MINER'S NONCE2 LENGTH DECIDES THE SPLIT, and that is the whole point.
 ///
-/// `mining.subscribe` advertises a 16-byte nonce1, and spec-correct firmware
-/// derives `nonce2_len = 32 - len(nonce1)` and sends 16. Older Equihash ASICs
-/// do not: most of the ecosystem's pools use a 4-byte nonce1, and firmware from
-/// that era (Innosilicon Z9 / Z9 mini in particular) assumes a nonce2 width
-/// rather than computing it — so it consumes only the first few bytes of
-/// whatever nonce1 it was handed and submits a longer nonce2.
+/// `mining.subscribe` advertises `ADVERTISED_NONCE1_LEN` bytes of nonce1, and
+/// spec-correct firmware derives `nonce2_len = 32 - len(nonce1)`. Older Equihash
+/// ASICs do not: firmware from that era (Innosilicon Z9 / Z9 mini in
+/// particular) assumes a nonce2 width rather than computing it — so it consumes
+/// only the first few bytes of whatever nonce1 it was handed and submits a
+/// longer nonce2. Accepting both is why this is inferred rather than fixed.
 ///
 /// Against the old fixed `[u8; 16]` decode that failed EVERY share with
 /// "expected 16 bytes", which from the miner's side is indistinguishable from
@@ -793,6 +834,16 @@ fn record_share_and_retarget(state: &Arc<StratumState>, client_id: u64, block_t:
 /// uniqueness so two miners do not grind the same search space. `nonce1[..8]`
 /// is the client id and bytes 8..16 are zero padding, so 4 bytes still
 /// distinguishes four billion connections — 0 would let two miners collide.
+const ADVERTISED_NONCE1_LEN: usize = 4;
+
+/// Session id bytes, sent hex-encoded.
+///
+/// HEX, NOT ASCII. This used to be the literal string "blockle-session", which
+/// no ZEC-family pool would emit: the convention is a hex session id, and the
+/// cgminer forks these ASICs run re-parse it as hex. A Z9 mini subscribed,
+/// read the reply, and hung up in the same second — twice per attempt, forever
+/// — which surfaces to the operator only as "No servers could be used!".
+const SESSION_PREFIX: [u8; 4] = [0xb1, 0x0c, 0x6e, 0x01];
 fn split_nonce(nonce1: &[u8; 16], nonce2: &[u8]) -> Result<[u8; 32], String> {
     if nonce2.len() < 16 || nonce2.len() > 28 {
         return Err(format!(
@@ -811,7 +862,46 @@ fn split_nonce(nonce1: &[u8; 16], nonce2: &[u8]) -> Result<[u8; 32], String> {
 
 #[cfg(test)]
 mod nonce_split_tests {
-    use super::split_nonce;
+    use super::{split_nonce, ADVERTISED_NONCE1_LEN, SESSION_PREFIX};
+
+    /// What we advertise has to be something this family will accept, and the
+    /// two properties that mattered are cheap to pin: a SHORT nonce1, and a
+    /// session id that is valid hex. Both were wrong, and the only symptom was
+    /// "No servers could be used! Exiting." with no pool-side error at all.
+    #[test]
+    fn subscribe_reply_shape_is_what_equihash_asics_expect() {
+        assert_eq!(
+            ADVERTISED_NONCE1_LEN, 4,
+            "a 4-byte extranonce1 is the convention on this family; Z9-era \
+             firmware sizes its nonce2 buffer from it and rejects longer"
+        );
+        // Must survive a hex round-trip, which the old ASCII "blockle-session"
+        // could not.
+        let s = hex::encode(SESSION_PREFIX);
+        assert_eq!(s.len(), SESSION_PREFIX.len() * 2);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()), "session id must be hex: {s}");
+        assert_eq!(hex::decode(&s).unwrap(), SESSION_PREFIX);
+    }
+
+    /// The advertised length and the inferred split have to AGREE: a miner that
+    /// believes us sends `32 - ADVERTISED_NONCE1_LEN` bytes, and that has to
+    /// reconstruct against the same prefix we handed out. If someone changes
+    /// one constant without the other, every share from every compliant miner
+    /// silently reconstructs the wrong nonce and fails verification.
+    #[test]
+    fn a_miner_that_believes_our_advertised_length_reconstructs_correctly() {
+        let n1 = n1();
+        let nonce2_len = 32 - ADVERTISED_NONCE1_LEN;
+        let nonce2: Vec<u8> = (0..nonce2_len).map(|i| 0x80 + i as u8).collect();
+
+        let got = split_nonce(&n1, &nonce2).expect("the advertised split must be accepted");
+        assert_eq!(
+            &got[..ADVERTISED_NONCE1_LEN],
+            &n1[..ADVERTISED_NONCE1_LEN],
+            "the prefix must be exactly what mining.subscribe advertised"
+        );
+        assert_eq!(&got[ADVERTISED_NONCE1_LEN..], &nonce2[..], "and the rest is the miner's");
+    }
 
     fn n1() -> [u8; 16] {
         let mut a = [0u8; 16];
