@@ -15,13 +15,81 @@ const api = async (path) => {
 };
 
 // ---- markets --------------------------------------------------------------
+//
+// BLOCK IS NEVER PRICED IN DOLLARS, INCLUDING HERE, INCLUDING BY ACCIDENT.
+//
+// The venue trades BLOCK against USDT and against USDC, and a USDT price IS a
+// dollar price — it does not stop being one because the ticker says USDT. The
+// product rule is that BLOCK is quoted only in BLOCK, so those rows do not
+// belong on a public marketing page, and `rows.slice(0, 8)` is exactly the
+// kind of code that puts one there without anybody deciding to: it takes
+// whatever the generator emitted first, so reordering the venue's quote list
+// in a TypeScript file two directories away can publish a dollar price for
+// BLOCK on the front page with nobody touching the front page.
+//
+// So the filter is explicit rather than positional. Markets that price
+// something else IN BLOCK are fine and stay — a BLOCK-denominated price is
+// the thing the rule asks for. What is excluded is BLOCK against a
+// dollar-pegged asset, in either direction, because one inversion is not a
+// meaningful amount of work for a reader.
+//
+// If a second BLOCK-20 token is ever listed, it belongs in BLOCK_PRICED. The
+// alternative — trusting the row order — is what this comment exists about.
+const BLOCK_PRICED = new Set(["BLOCK"]);
+const DOLLAR_PEGGED = new Set(["USDT", "USDC", "USDB", "DAI"]);
+const dollarPricesBlock = (t) => {
+  const a = String(t.base || "").toUpperCase();
+  const b = String(t.quote || "").toUpperCase();
+  return (BLOCK_PRICED.has(a) && DOLLAR_PEGGED.has(b)) ||
+    (BLOCK_PRICED.has(b) && DOLLAR_PEGGED.has(a));
+};
+
+/*
+ * FAILING SILENT IS NOT AVAILABLE TO THIS STRIP ANY MORE.
+ *
+ * It used to `catch { }` and leave the markup alone, which was only tolerable
+ * while the markup held four hand-written pair names — and those were four
+ * markets the venue does not trade, so the quiet failure published a false
+ * market list rather than nothing. The rows are gone from index.html, so the
+ * failure path now has to say what happened in its own words.
+ *
+ * It says "unavailable", not "no markets": we did not learn that the venue has
+ * none, we learnt that we could not ask.
+ */
+const marketsUnavailable = (tbody, what) => {
+  tbody.innerHTML = "";
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    '<td class="pair"></td><td class="num">—</td>' +
+    '<td class="num">—</td><td class="num">—</td>';
+  tr.querySelector("td").textContent = what;
+  tbody.appendChild(tr);
+};
+
 (async function markets() {
   const tbody = document.getElementById("mrows");
   try {
     const rows = await api("tickers");
-    if (!Array.isArray(rows) || rows.length === 0) return;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      marketsUnavailable(tbody, "Market data unavailable");
+      return;
+    }
+    const shown = rows.filter((t) => !dollarPricesBlock(t));
+    if (shown.length === 0) {
+      /*
+       * EVERY MARKET THE VENUE RETURNED PRICES BLOCK IN DOLLARS.
+       *
+       * Not a hypothetical: the venue's first markets were BLOCK/USDT and
+       * BLOCK against a stablecoin is exactly what the filter above removes.
+       * The honest report is that there is nothing we can show here — never a
+       * fallback to the excluded rows, which is the one outcome the filter
+       * exists to prevent.
+       */
+      marketsUnavailable(tbody, "No markets we can quote here yet");
+      return;
+    }
     tbody.innerHTML = "";
-    for (const t of rows.slice(0, 8)) {
+    for (const t of shown.slice(0, 8)) {
       const chg = t.change24h;
       const dir = typeof chg === "number" ? (chg >= 0 ? "up" : "down") : "";
       const tr = document.createElement("tr");
@@ -38,7 +106,9 @@ const api = async (path) => {
       c[3].textContent = t.volume24h ?? "\u2014";
       tbody.appendChild(tr);
     }
-  } catch { /* leave the dashes */ }
+  } catch {
+    marketsUnavailable(tbody, "Market data unavailable");
+  }
 })();
 
 // ---- withdrawal liquidity -------------------------------------------------

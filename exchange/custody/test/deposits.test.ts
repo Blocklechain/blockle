@@ -37,16 +37,47 @@ test("AN UNPROVISIONED CHAIN RETURNS NOTHING — never a guess", () => {
 
 test("THE REFUSAL NAMES A CHAIN THAT WOULD WORK", () => {
 	// "You cannot deposit on Solana" is a dead end. "You cannot deposit on
-	// Solana; Tron is available" is an answer.
+	// Solana; Tron is available" is an answer. That is the intent, and it holds
+	// whichever sentence explains the absence.
+	//
+	// WHAT CHANGED, AND WHY THIS TEST NOW ASSERTS A DIFFERENT SENTENCE. This
+	// case names SOL, which is one of the three rails whose cause is MEASURED
+	// (settlement.RAIL_BLOCKERS), so `describeDeposit` now answers with that
+	// cause instead of the generic "no address is provisioned". The generic
+	// wording was true for every absent address, which is exactly why it was
+	// useless here: it is what customers were shown for ETH, for BNB and for
+	// SOL while the real cause sat in the service's log. The alternative-naming
+	// half of the contract is unchanged and still asserted below; the coverage
+	// for the generic wording moved to the test immediately after this one, so
+	// it is tested on a rail that genuinely has no recorded cause.
 	const d = setup();
 	d.provision({ userId: "u1", asset: "USDT", network: "TRC20", address: "T1", source: "bitgo" });
 
 	const r = describeDeposit(d, "u1", "USDT", "SOL");
 	assert.equal(r.address, null);
-	assert.match(String(r.reason), /No USDT deposit address is provisioned on SOL/);
-	assert.match(String(r.reason), /cannot be recovered by anyone/);
+	assert.match(String(r.reason), /SOL deposits are not open yet/);
+	assert.match(String(r.reason), /we do not hold coins we cannot send/);
 	assert.deepEqual(r.alternatives, ["TRC20"]);
 	assert.match(String(r.reason), /available on: TRC20/);
+	// And it never suggests the address might appear on a reload.
+	assert.doesNotMatch(String(r.reason), /try again|retry|reload/i);
+});
+
+test("AN ABSENCE WITH NO RECORDED CAUSE STILL GETS THE CAREFUL WORDING", () => {
+	// The complement of the test above, and the reason it is a separate test
+	// rather than a changed assertion: a rail with no entry in RAIL_BLOCKERS
+	// must still fall through to the wording that admits it does not know why.
+	// Inventing a cause is worse than admitting none, and the fall-through is
+	// the branch that would silently rot if nothing exercised it.
+	//
+	// DOGE is chosen because it is single-chain and has no measured blocker, so
+	// it reaches the generic path by construction rather than by luck.
+	const d = setup();
+	const r = describeDeposit(d, "u1", "DOGE", undefined);
+	assert.equal(r.address, null);
+	assert.match(String(r.reason), /No DOGE deposit address is provisioned/);
+	assert.match(String(r.reason), /cannot be recovered by anyone/);
+	assert.deepEqual(r.alternatives, []);
 });
 
 test("ONE CUSTOMER'S ADDRESS IS NOT ANOTHER'S", () => {
@@ -162,15 +193,27 @@ test("A CLOSED CHAIN IS REPORTED, NOT OMITTED", async () => {
 	// "No address shown" and "this chain is shut until we fund its gas" look
 	// identical on a screen, and only one of them is worth waiting out. Dropping
 	// the row is what sends someone to support.
+	//
+	// THE GAS GATE IS NOW EXERCISED ON TRC20 RATHER THAN ERC20, because ERC20
+	// is one of the rails with a MEASURED structural blocker and is therefore
+	// refused before the gas gate is ever consulted. Pointing the fixture's
+	// unfunded chain at ERC20 would have left the gas branch untested while
+	// still passing on the wording. TRC20's anchor (TRX) has no recorded
+	// blocker, so it reaches the gate by construction.
+	//
+	// Both closure causes are covered here on purpose: TRC20 shut by gas, ERC20
+	// shut structurally, BTC open. Three rows, three outcomes, nothing dropped.
 	const d = setup();
+	const asked: string[] = [];
 	const rows = await listDepositAddresses({
 		deposits: d,
 		userId: "u1",
 		assets: ["USDT", "BTC"],
 		networksFor: (a) => (a === "USDT" ? ["TRC20", "ERC20"] : []),
 		gasReady: (_a, net) =>
-			net === "ERC20" ? { ok: false, reason: "no ETH float." } : { ok: true },
+			net === "TRC20" ? { ok: false, reason: "no TRX float." } : { ok: true },
 		provision: async (asset, net) => {
+			asked.push(`${asset}/${net ?? "native"}`);
 			d.provision({ userId: "u1", asset, network: net, address: `addr-${asset}-${net ?? "native"}`, source: "bitgo" });
 		},
 	});
@@ -179,20 +222,36 @@ test("A CLOSED CHAIN IS REPORTED, NOT OMITTED", async () => {
 	assert.deepEqual(rows.map((r) => `${r.asset}/${r.network ?? "native"}`),
 		["USDT/TRC20", "USDT/ERC20", "BTC/native"]);
 
+	const trc = rows.find((r) => r.network === "TRC20")!;
+	assert.equal(trc.open, false);
+	assert.equal(trc.address, null, "never an address for a chain we cannot pay from");
+	assert.match(trc.reason ?? "", /no TRX float/);
+	assert.match(trc.reason ?? "", /cannot send back/);
+
+	// The structurally blocked rail reports its own cause...
 	const erc = rows.find((r) => r.network === "ERC20")!;
 	assert.equal(erc.open, false);
-	assert.equal(erc.address, null, "never an address for a chain we cannot pay from");
-	assert.match(erc.reason ?? "", /no ETH float/);
-	assert.match(erc.reason ?? "", /cannot send back/);
+	assert.equal(erc.address, null);
+	assert.match(erc.reason ?? "", /ETH deposits are not open yet/);
 
-	// And the open ones were provisioned on sight.
-	assert.equal(rows.find((r) => r.network === "TRC20")!.address, "addr-USDT-TRC20");
+	// ...and was never asked of the custodian. Three doomed requests per page
+	// load is what this saves; the assertion is here because the saving is
+	// invisible and would be silently lost by a reordering.
+	assert.deepEqual(asked, ["BTC/native"]);
+
+	// And the open one was provisioned on sight.
 	assert.equal(rows.find((r) => r.asset === "BTC")!.address, "addr-BTC-native");
 });
 
 test("ONE CHAIN'S FAILURE DOES NOT EMPTY THE LIST", async () => {
 	// A custodian timeout on one chain must not hide an address that already
 	// exists on another. The failing chain reports its absence; the rest stand.
+	//
+	// THE FAILING CHAIN IS DOGE, NOT SOL. SOL has a measured structural blocker
+	// now, so the custodian is never called for it and this fixture's throw
+	// would never fire — the test would pass vacuously, asserting nothing about
+	// error handling. DOGE has no recorded blocker, so the call is really made
+	// and really fails, which is the property under test.
 	const d = setup();
 	d.provision({ userId: "u1", asset: "BTC", network: undefined, address: "bc1q-known", source: "bitgo" });
 	const seen: string[] = [];
@@ -200,19 +259,19 @@ test("ONE CHAIN'S FAILURE DOES NOT EMPTY THE LIST", async () => {
 	const rows = await listDepositAddresses({
 		deposits: d,
 		userId: "u1",
-		assets: ["SOL", "BTC"],
+		assets: ["DOGE", "BTC"],
 		networksFor: () => [],
 		provision: async (asset) => {
-			if (asset === "SOL") throw new Error("custodian timeout");
+			if (asset === "DOGE") throw new Error("custodian timeout");
 			d.provision({ userId: "u1", asset, network: undefined, address: `a-${asset}`, source: "bitgo" });
 		},
 		onError: (asset, _net, error) => seen.push(`${asset}: ${error}`),
 	});
 
-	assert.deepEqual(seen, ["SOL: custodian timeout"], "the failure is surfaced");
-	const sol = rows.find((r) => r.asset === "SOL")!;
-	assert.equal(sol.address, null, "and NOT an invented address");
-	assert.equal(sol.open, false);
+	assert.deepEqual(seen, ["DOGE: custodian timeout"], "the failure is surfaced");
+	const failed = rows.find((r) => r.asset === "DOGE")!;
+	assert.equal(failed.address, null, "and NOT an invented address");
+	assert.equal(failed.open, false);
 	// The pre-existing one is untouched and still shown.
 	assert.equal(rows.find((r) => r.asset === "BTC")!.address, "bc1q-known");
 });

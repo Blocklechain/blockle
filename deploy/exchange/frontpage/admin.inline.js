@@ -1,12 +1,142 @@
 "use strict";
 
+  /*
+   * "THIS SCRIPT RAN" IS ITS OWN FACT, AND IT IS ASSERTED FIRST.
+   *
+   * admin.html carries a CSS-only watchdog that reveals a boot-failure banner
+   * a few seconds after load unless the document is marked `booted`. Setting
+   * the class here — before anything that could throw — is what distinguishes
+   * "the console's code never ran" from "the console ran and something inside
+   * it failed". The two need different advice, and for a whole evening the
+   * page could give neither: admin.inline.js was being served from a mount
+   * that had no such file, 404ed, and the operator saw the static placeholder
+   * "checking session…" for as long as they were willing to wait.
+   *
+   * CSS, not an inline <script> and not an onerror= attribute, because this
+   * origin's CSP is `script-src 'self'` — both of those are blocked, and a
+   * watchdog that the CSP blocks is a watchdog that is not there.
+   */
+  document.documentElement.classList.add("booted");
+
   // Mount-relative, so this page works whether it is served at /admin/ or at a
   // path behind a proxy. An absolute /admin/api/... would break the moment the
   // mount point changes, which it already did once.
   const API = "api/";
 
+  /*
+   * NO REQUEST WAITS FOREVER.
+   *
+   * Every fetch on this page is given a deadline. A hung TCP connection to
+   * the API, or an nginx that accepted the connection and then sat on it,
+   * otherwise leaves the awaiting `loadMe()` suspended with no timer, no
+   * rejection and no way out — which renders as a permanent "checking
+   * session…" that is indistinguishable from the 404 above.
+   *
+   * The budget is deliberately longer than the server's own: blockleauth.ts
+   * gives the accounts service 8s and then answers 503. A client deadline
+   * below that would pre-empt the server's much more specific diagnosis and
+   * report "no response" where the server was about to say "account service
+   * unreachable". 15s leaves room for that answer plus a slow link.
+   */
+  const GET_TIMEOUT_MS = 15_000;
+  // Mutations are slower by nature — they touch a chain — and they are also
+  // the ones where giving up early is most confusing, because the action may
+  // have been taken. nginx cuts the proxy at 30s, so time out just after it.
+  const POST_TIMEOUT_MS = 32_000;
+
   const $ = (id) => document.getElementById(id);
   const txt = (s) => document.createTextNode(s == null ? "—" : String(s));
+
+  /**
+   * One JSON request under one deadline, with a readable reason when it
+   * expires.
+   *
+   * THE DEADLINE COVERS THE BODY, NOT JUST THE HEADERS. A server that sends
+   * a status line and then stalls mid-body leaves `response.json()` awaiting
+   * forever, and a timer that was cleared the moment the headers landed would
+   * not save us from it — so the fetch and the parse live inside the same
+   * AbortController scope.
+   *
+   * AbortError's own message is "The operation was aborted", which tells an
+   * operator mid-incident nothing at all. It is replaced with the fact that
+   * matters: what did not answer, and for how long we waited.
+   */
+  /**
+   * `api/` + the endpoint, joined with EXACTLY ONE slash.
+   *
+   * Call sites spell the endpoint both ways — `get("revenue")` and
+   * `get("/customers?…")` — and the naive concatenation turned the second into
+   * `api//customers`, i.e. `/admin/api//customers`. The router does
+   * `url.pathname.slice("/admin/api".length)` and compares the result to
+   * `"/customers"`; it gets `"//customers"`, matches nothing, and 404s. The
+   * customers panel and the lookup form have been riding on nginx's
+   * `merge_slashes` (on by default) silently repairing the URL before the
+   * service ever saw it — so they would die the moment anyone reached the
+   * console through a proxy that did not, or through the port directly.
+   *
+   * Normalising here rather than at the seven call sites: one chokepoint can
+   * be tested, and a future `get("/thing")` cannot reintroduce it.
+   */
+  function endpoint(path) {
+    return API + String(path).replace(/^\/+/, "");
+  }
+
+  async function requestJson(path, init, ms, what) {
+    const ac = new AbortController();
+    let expired = false;
+    const timer = setTimeout(() => { expired = true; ac.abort(); }, ms);
+    try {
+      const r = await fetch(endpoint(path), { ...init, signal: ac.signal });
+      /*
+       * READ THE BODY AS TEXT, THEN PARSE. Not `r.json().catch(...)`.
+       *
+       * The obvious spelling — `await r.json().catch(() => ({ error:
+       * r.statusText }))` — defeats the deadline it sits inside. When the body
+       * stalls and the controller aborts, `r.json()` rejects with AbortError
+       * and that `.catch` turns it into a perfectly ordinary-looking
+       * `{error: "OK"}` body on a 200 response. The page then renders a
+       * signed-in operator with no email instead of reporting a timeout. The
+       * harness caught exactly this.
+       *
+       * `r.text()` lets the abort propagate; only a genuine parse failure —
+       * an nginx error page, a gateway's HTML — falls back to the status text.
+       */
+      const raw = await r.text();
+      let body;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        body = { error: r.statusText };
+      }
+      if (body === null || typeof body !== "object") body = { error: r.statusText };
+      if (!r.ok) {
+        const err = new Error(body.error || ("HTTP " + r.status));
+        err.status = r.status;
+        throw err;
+      }
+      return body;
+    } catch (e) {
+      if (expired) {
+        const err = new Error(
+          `${what} did not respond within ${Math.round(ms / 1000)}s`,
+        );
+        err.status = 504;
+        throw err;
+      }
+      // Already one of ours (a real HTTP status): pass it through untouched.
+      if (e && typeof e.status === "number") throw e;
+      // A genuine transport failure: DNS, TLS, offline, or a CSP connect-src
+      // refusal. "Failed to fetch" on its own has sent people to the wrong
+      // layer more than once.
+      const err = new Error(
+        `could not reach ${what} (${(e && e.message) || "network error"})`,
+      );
+      err.status = 0;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   function cell(row, value, cls) {
     const td = document.createElement("td");
@@ -36,30 +166,26 @@
    * apart was being dropped here.
    */
   async function get(path) {
-    const r = await fetch(API + path, { credentials: "same-origin" });
-    const body = await r.json().catch(() => ({ error: r.statusText }));
-    if (!r.ok) {
-      const err = new Error(body.error || ("HTTP " + r.status));
-      err.status = r.status;
-      throw err;
-    }
-    return body;
+    return requestJson(
+      path,
+      { credentials: "same-origin" },
+      GET_TIMEOUT_MS,
+      "the exchange admin API",
+    );
   }
 
   async function post(path, payload, code) {
-    const r = await fetch(API + path, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json", "x-admin-totp": code },
-      body: JSON.stringify(payload),
-    });
-    const body = await r.json().catch(() => ({ error: r.statusText }));
-    if (!r.ok) {
-      const err = new Error(body.error || ("HTTP " + r.status));
-      err.status = r.status;
-      throw err;
-    }
-    return body;
+    return requestJson(
+      path,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", "x-admin-totp": code },
+        body: JSON.stringify(payload),
+      },
+      POST_TIMEOUT_MS,
+      "the exchange admin API",
+    );
   }
 
   /** A request id so a double-submit is one action, not two. */
@@ -250,10 +376,30 @@
     return balances.map((b) => b.amount + " " + b.asset).join(", ");
   }
 
+  /*
+   * THE ONE LOADER THAT HAD NO ERROR PATH.
+   *
+   * Every other load* function wraps its request; this one awaited bare. Two
+   * consequences, both of them the bug this whole change is about: the
+   * customers table kept its "loading…" row forever, and the rejection
+   * escaped into the boot `Promise.all` as an unhandled rejection that took
+   * the siblings' results with it. Also reached from the Previous/Next
+   * buttons, where a bare rejection is simply a dead click.
+   */
   async function loadCustomers(offset) {
     custOffset = offset || 0;
     const tb = document.querySelector("#customers tbody");
-    const r = await get("/customers?limit=25&offset=" + custOffset);
+    let r;
+    try {
+      r = await get("/customers?limit=25&offset=" + custOffset);
+    } catch (e) {
+      tb.textContent = "";
+      const tr = tb.insertRow();
+      const td = tr.insertCell();
+      td.colSpan = 5;
+      td.appendChild(txt("Could not load customers: " + String((e && e.message) || e)));
+      return;
+    }
     tb.textContent = "";
     if (!r.customers.length) {
       const tr = tb.insertRow();
@@ -395,12 +541,97 @@
     }
   }
 
+  /**
+   * WHAT WENT WRONG, IN THE OPERATOR'S WORDS.
+   *
+   * One place that turns a status into the three things the landing page has
+   * to say, so a status nobody enumerated still produces a specific sentence
+   * instead of falling through to "not signed in" — which is a lie for every
+   * status except 401, and was being told for all of them.
+   */
+  function diagnose(status, message) {
+    switch (status) {
+      case 401:
+        return {
+          who: "not signed in",
+          title: "Operator sign-in required",
+          detail:
+            "The console uses your ordinary Blockle account. Sign in, and if " +
+            "that account is on the operator allowlist you will land here.",
+          offerSignin: true,
+        };
+      // 404 means the session is VALID and simply not an operator. Saying
+      // "not signed in" there sends someone to sign in again, repeatedly,
+      // with the same account and the same result.
+      case 404:
+        return {
+          who: "signed in — not an operator",
+          title: "This account is not an operator",
+          detail:
+            "You are signed in, but this account is not on the operator " +
+            "allowlist. Admin rights are granted to a Blockle account id — " +
+            "there is no separate operator login to try.",
+          offerSignin: true,
+        };
+      case 503:
+        return {
+          who: "account service unreachable",
+          title: "Cannot reach the account service",
+          detail:
+            "The Blockle account service is not answering, so we cannot tell " +
+            "who you are and will not guess. Nothing here is available until " +
+            "it is back. Detail: " + message,
+          offerSignin: false,
+        };
+      // The admin API accepted nothing, or accepted and then stalled. This is
+      // the case that used to be a spinner: there was no timeout, so there was
+      // no status, so there was no message.
+      case 504:
+        return {
+          who: "admin API timed out",
+          title: "The admin API did not answer",
+          detail:
+            "The request for your operator identity was given a deadline and " +
+            "missed it. The service may be wedged rather than down — check " +
+            "`systemctl status exchange-public-api` and " +
+            "`journalctl -u exchange-public-api -n 50` on the box. " +
+            "Detail: " + message,
+          offerSignin: false,
+        };
+      case 0:
+        return {
+          who: "admin API unreachable",
+          title: "Could not reach the admin API at all",
+          detail:
+            "The request failed before any response arrived — the host is " +
+            "down, the network is gone, or this page's Content-Security-Policy " +
+            "refused the connection. Detail: " + message,
+          offerSignin: false,
+        };
+      default:
+        return {
+          who: `session check failed (HTTP ${status})`,
+          title: `The session check failed (HTTP ${status})`,
+          detail:
+            "This is not a status the console knows how to interpret, which " +
+            "usually means something between the browser and the service " +
+            "answered instead of the service. Detail: " + message,
+          offerSignin: status >= 400 && status < 500,
+        };
+    }
+  }
+
   async function loadMe() {
+    // NOT "checking session…" — that is the placeholder this whole exercise is
+    // about. If every branch below somehow fails to write something, the
+    // `finally` writes this, and it is at least true.
+    let settled = false;
     try {
       const me = await get("me");
       $("who").textContent =
         (me.email || me.accountId) +
         (me.canAct ? "" : " — view only (no authenticator enrolled)");
+      settled = true;
       if (!me.canAct) {
         for (const b of document.querySelectorAll("form.act button")) {
           b.disabled = true;
@@ -420,14 +651,15 @@
        *
        * Now it offers the sign-in, and distinguishes the cases it can.
        */
-      const status = Number(e.status) || 0;
-      // 404 means the session is VALID and simply not an operator. Saying
-      // "not signed in" there sends someone to sign in again, repeatedly,
-      // with the same account and the same result.
-      $("who").textContent =
-        status === 404 ? "signed in — not an operator"
-        : status === 503 ? "account service unreachable"
-        : "not signed in";
+      // `|| 0` would turn a real 0 into 0 anyway, but an ABSENT status must
+      // not silently become "unreachable" — a thrown TypeError from the code
+      // above is a bug in the console, not a network event, so it keeps a
+      // status of its own and lands in the default branch.
+      const status = typeof e.status === "number" ? e.status : -1;
+      const d = diagnose(status, String((e && e.message) || e));
+
+      $("who").textContent = d.who;
+      settled = true;
       for (const el of document.querySelectorAll("details.card")) el.remove();
 
       const host = $("banner");
@@ -438,34 +670,23 @@
 
       const h = document.createElement("h3");
       h.style.color = "var(--ink)";
-      h.appendChild(txt(
-        status === 404 ? "This account is not an operator"
-        : status === 503 ? "Cannot reach the account service"
-        : "Operator sign-in required"
-      ));
+      h.appendChild(txt(d.title));
       card.appendChild(h);
 
       const p = document.createElement("p");
       p.style.cssText = "margin:0 0 14px;color:var(--ink-dim);font-size:13px";
-      p.appendChild(txt(
-        status === 404
-          ? "You are signed in, but this account is not on the operator " +
-            "allowlist. Admin rights are granted to a Blockle account id — " +
-            "there is no separate operator login to try."
-          : status === 503
-            ? "The Blockle account service is not answering, so we cannot tell " +
-              "who you are and will not guess. Nothing here is available until " +
-              "it is back. Detail: " + (e.message || e)
-            : "The console uses your ordinary Blockle account. Sign in, and if " +
-              "that account is on the operator allowlist you will land here."
-      ));
+      p.appendChild(txt(d.detail));
       card.appendChild(p);
 
-      if (status !== 503) {
+      if (d.offerSignin) {
         const a = document.createElement("a");
+        // RETURN TO THIS PAGE, not to a hardcoded hostname. The old link sent
+        // the operator to admin.blockle.org/admin/, which now 301s back to
+        // this origin — a redirect chain through the one host whose cookie
+        // scope caused the original problem.
         a.href =
           "https://exchange.blockle.org/signin.html?as=operator&return=" +
-          encodeURIComponent("https://admin.blockle.org/admin/");
+          encodeURIComponent(location.href);
         a.style.cssText =
           "display:inline-flex;align-items:center;justify-content:center;" +
           "background:var(--signal);color:#04161a;text-decoration:none;" +
@@ -473,8 +694,35 @@
         a.appendChild(txt(status === 404 ? "Sign in as a different account" : "Sign in"));
         card.appendChild(a);
       }
+
+      // A FAILURE IS WORTH RETRYING WITHOUT A RELOAD, and for the transport
+      // failures it is the only sensible next move.
+      if (!d.offerSignin) {
+        const again = document.createElement("button");
+        again.type = "button";
+        again.textContent = "Try again";
+        again.style.cssText =
+          "background:var(--signal);color:#04161a;border:0;font-weight:600;" +
+          "padding:10px 16px;border-radius:5px;cursor:pointer";
+        again.addEventListener("click", () => { location.reload(); });
+        card.appendChild(again);
+      }
+
       host.appendChild(card);
       throw e;
+    } finally {
+      /*
+       * THE LOADING STATE IS CLEARED HERE, UNCONDITIONALLY.
+       *
+       * Every branch above already writes `who`, so this should never fire —
+       * which is exactly why it exists. "checking session…" is the string an
+       * operator stared at for an evening, and no future edit to the branches
+       * above gets to leave it on screen. If something throws between the
+       * await and the assignment, this is what speaks.
+       */
+      if (!settled) {
+        $("who").textContent = "session check did not complete";
+      }
     }
   }
 
@@ -531,7 +779,7 @@
     try {
       await loadMe();
     } catch {
-      return; // no session: the banner already says so
+      return; // no session: the banner already says why, specifically
     }
     const custForm = document.getElementById("cust-form");
     if (custForm) {
@@ -540,7 +788,17 @@
         lookup(document.getElementById("cust-q").value);
       });
     }
-    await Promise.all([
+    /*
+     * allSettled, NOT all.
+     *
+     * These five panels are independent: a chain whose balance call is timing
+     * out must not blank the revenue figures beside it. `Promise.all` rejects
+     * on the first failure, abandoning the other four mid-render and raising
+     * an unhandled rejection — so one sick panel used to be able to leave
+     * four healthy ones showing "loading…". Each loader renders its own error
+     * in its own card; this just makes sure every one of them gets to run.
+     */
+    await Promise.allSettled([
       loadRevenue(), loadGas(), loadCoverage(), loadActions(), loadCustomers(0),
     ]);
   })();

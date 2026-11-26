@@ -21,7 +21,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ASSETS, custodyIds, settlementAsset } from "../src/assets";
-import { MARKETS } from "../src/venue";
+import { QUOTE_SENIORITY, settleable } from "../src/settlement";
+import { MARKETS, NOT_LISTED, PENDING_SETTLEMENT, type Market } from "../src/venue";
 import { LIVE_FEES } from "../src/withdrawalfees";
 
 /** Every settlement asset that actually appears in a generated market. */
@@ -96,17 +97,123 @@ test("every priced chain belongs to a real asset", () => {
 	}
 });
 
-test("each traded asset has both a USDT and a BLOCK market", () => {
-	// The generator's whole purpose. Asserted because the symptom of it
-	// regressing — one missing pair — is the kind nobody notices.
-	for (const a of tradedAssets()) {
-		const pairs = MARKETS.filter((m) => m.base === a).map((m) => m.quote);
-		if (a === "USDT" || a === "BLOCK") continue; // quotes themselves
-		assert.deepEqual(
-			[...pairs].sort(),
-			["BLOCK", "USDT"],
-			`${a} should trade against both quotes, got ${pairs.join(",") || "none"}`,
+/* -------------------------------------------------- no asset is half-listed */
+
+/*
+ * WHAT HAPPENED TO "each traded asset has both a USDT and a BLOCK market".
+ *
+ * That test asserted the old generator's whole purpose, and its INTENT — no
+ * asset is listed against some quotes and silently missing against others — is
+ * what the four tests below carry. The literal assertion could not survive the
+ * quote expansion, and not only because the array grew:
+ *
+ *   1. IT WAS UNSATISFIABLE FOR A QUOTE ASSET. It read `m.base === a`, so it
+ *      asked which quotes an asset trades against as a BASE. Pairs are emitted
+ *      once, in one orientation, so BTC's pair with BLOCK is `BTC-BLOCK` and
+ *      USDT's pair with USDC is `USDC-USDT` — USDT is a base in nothing at all.
+ *      "Does a market for this unordered pair exist" is the question that has
+ *      an answer; "which quotes is it a base against" does not.
+ *
+ *   2. IT WAS ASSERTING THINGS THAT WERE NOT TRUE. As of the probe behind
+ *      settlement.ts, ETH, SOL and BNB cannot take a deposit at all, so their
+ *      USDT and BLOCK markets were one-way doors — and the test demanded them.
+ *      A market that cannot settle is worse than no market, so the new rule has
+ *      to be able to say "deliberately absent, here is why", which a deepEqual
+ *      against a fixed array cannot express.
+ *
+ * So the invariant is now: for every pair of settleable assets where one side
+ * is a quote, there is either an OPEN market or a published REASON there is
+ * not. Absence without a reason is the half-listing, and it fails. That is
+ * strictly stronger than the old assertion, because it also covers the pairs
+ * the old one never looked at and it refuses silence.
+ */
+
+/** Unordered key, so {a,b} and {b,a} collide. */
+function pairKey(a: string, b: string): string {
+	return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+test("NO ASSET IS HALF-LISTED: every settleable pair is open, or refused in writing", () => {
+	const open = new Map<string, Market>();
+	const refused = new Map<string, string>();
+	for (const m of MARKETS) {
+		if (m.closed === undefined) open.set(pairKey(m.base, m.quote), m);
+		else refused.set(pairKey(m.base, m.quote), m.closed);
+	}
+	for (const p of [...NOT_LISTED, ...PENDING_SETTLEMENT]) {
+		refused.set(pairKey(p.base, p.quote), p.why);
+	}
+
+	const settleableAssets = tradedAssets().filter((a) => settleable(a).ok);
+	for (const a of settleableAssets) {
+		for (const q of QUOTE_SENIORITY) {
+			if (a === q || !settleable(q).ok) continue;
+			const key = pairKey(a, q);
+			if (open.has(key)) continue;
+			const why = refused.get(key);
+			assert.ok(
+				why !== undefined,
+				`${a}/${q} has no open market and no reason — a pair that is absent ` +
+					"without a published reason is indistinguishable from a bug",
+			);
+			assert.ok(
+				why!.trim().length > 20,
+				`${a}/${q} is refused with "${why!}", which does not explain anything`,
+			);
+		}
+	}
+});
+
+test("EVERY UNORDERED PAIR HAS AT MOST ONE SYMBOL", () => {
+	// The same book twice with the prices inverted is the worst outcome
+	// available: two order books over one pair, each arbitrageable against the
+	// other, both real. The old generator avoided it by `Object.keys` order,
+	// which a cosmetic alphabetisation of MIN_BASE would have broken.
+	const seen = new Map<string, string>();
+	for (const m of MARKETS) {
+		const key = pairKey(m.base, m.quote);
+		const first = seen.get(key);
+		assert.equal(
+			first,
+			undefined,
+			`${m.symbol} and ${String(first)} are the same pair in both directions`,
 		);
+		seen.set(key, m.symbol);
+	}
+});
+
+test("EVERY PAIR WITH A SYMBOL HAS EXACTLY ONE STATE, and no pair is in two lists", () => {
+	// MARKETS, NOT_LISTED and PENDING_SETTLEMENT are three different claims to a
+	// customer ("refuses orders", "never will exist", "will appear when a rail
+	// opens"). A pair in two of them makes the UI's answer depend on which list
+	// it read first.
+	const symbols = new Set(MARKETS.map((m) => pairKey(m.base, m.quote)));
+	for (const p of [...NOT_LISTED, ...PENDING_SETTLEMENT]) {
+		assert.ok(
+			!symbols.has(pairKey(p.base, p.quote)),
+			`${p.base}/${p.quote} has a market symbol AND is listed as unavailable`,
+		);
+	}
+	const unlisted = new Set(NOT_LISTED.map((p) => pairKey(p.base, p.quote)));
+	for (const p of PENDING_SETTLEMENT) {
+		assert.ok(
+			!unlisted.has(pairKey(p.base, p.quote)),
+			`${p.base}/${p.quote} is both "waiting on settlement" and "never listed"`,
+		);
+	}
+});
+
+test("AN OPEN MARKET NEVER HAS AN UNSETTLEABLE LEG", () => {
+	// The one-way-door check, stated from the other direction: a book that can
+	// be sold into but never funded costs the customer a deposit, where an empty
+	// book costs them nothing. BLOCK passes via SETTLEMENT_EXCEPTIONS, which is
+	// named and carries its caveat rather than being an absent check.
+	for (const m of MARKETS) {
+		if (m.closed !== undefined) continue;
+		for (const leg of [m.base, m.quote]) {
+			const s = settleable(leg);
+			assert.ok(s.ok, `${m.symbol} is open but ${leg} cannot settle: ${s.ok ? "" : s.why}`);
+		}
 	}
 });
 

@@ -282,7 +282,24 @@ export async function adminRoute(
 	deps: AdminDeps,
 ): Promise<boolean> {
 	if (!url.pathname.startsWith("/admin/api/")) return false;
-	const p = url.pathname.slice("/admin/api".length);
+	/*
+	 * REPEATED SLASHES COLLAPSE BEFORE ANYTHING IS MATCHED.
+	 *
+	 * Every route below is an `===` against a literal, so `//customers` is not
+	 * `/customers` and falls through to the 404 at the bottom — a 404 that is
+	 * indistinguishable, from the browser, from "that endpoint does not exist".
+	 * The console was emitting exactly that: it joined its mount-relative
+	 * `api/` to a call site spelled `"/customers"`. In production nginx's
+	 * `merge_slashes` repaired the URL in flight, so the panel worked and the
+	 * latent break stayed invisible — until someone reached :3100 directly, or
+	 * put a proxy in front that leaves the path alone, at which point the
+	 * customer directory and the lookup form 404 for no stated reason.
+	 *
+	 * The client now normalises too. This is the half that cannot be bypassed
+	 * by a caller, which is why both exist: a router whose correctness depends
+	 * on a proxy setting is a router that is wrong.
+	 */
+	const p = url.pathname.slice("/admin/api".length).replace(/\/{2,}/g, "/");
 
 	try {
 		const user = await operator(req, deps);

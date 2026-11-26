@@ -40,7 +40,14 @@
 // that gets a domain demoted, and it would be a lie regardless.
 // -----------------------------------------------------------------------------
 
-import { LISTED, QUOTES, type Fact, type ListedCoin, type ListingStatus } from "./listed";
+import {
+	LISTED,
+	QUOTES,
+	marketsFor,
+	type Fact,
+	type ListedCoin,
+	type ListingStatus,
+} from "./listed";
 
 export const SITE = "https://exchange.blockle.org";
 
@@ -81,10 +88,40 @@ export function esc(s: string): string {
 }
 
 /**
+ * THE ASSETS A LIVE COIN CAN ACTUALLY BE SOLD INTO, most senior first.
+ *
+ * Derived from the venue's open markets rather than from a quote list, because
+ * these pages publish links. `marketsFor` returns real symbols in the venue's
+ * own orientation, so this reads the counterparty off each one instead of
+ * assuming the coin is the base — which it is not for every pair (the live
+ * symbol for BLOCK against USDC is `USDC-BLOCK`).
+ */
+function counterparts(coin: ListedCoin): readonly string[] {
+	return marketsFor(coin).map((sym) => {
+		const i = sym.indexOf("-");
+		const base = sym.slice(0, i);
+		return base === coin.symbol ? sym.slice(i + 1) : base;
+	});
+}
+
+/** "A", "A and B", "A, B and C" — written out, because this is prose. */
+function andList(xs: readonly string[]): string {
+	if (xs.length === 0) return "";
+	if (xs.length === 1) return xs[0]!;
+	return `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]!}`;
+}
+
+/**
  * THE ONE FUNCTION THAT DECIDES WHAT A PAGE CLAIMS.
  *
  * Everything else is layout. If a page ever reads as though a market is open
  * when it is not, the bug is here, and nowhere else.
+ *
+ * THE QUOTE LIST IS NO LONGER A SENTENCE SOMEBODY TYPED. Every "trades against
+ * USDT and against BLOCK" in this file was written when those were the only two
+ * quotes, and each one became a false claim the day a third was added — while
+ * still reading perfectly. They are generated from the venue's open markets
+ * now, so the copy cannot disagree with the market table.
  */
 export function headline(coin: ListedCoin): {
 	readonly title: string;
@@ -94,17 +131,33 @@ export function headline(coin: ListedCoin): {
 	/** For the index badge and the page's own status line. */
 	readonly statusLine: string;
 } {
-	const pair = `${coin.symbol}/USDT`;
+	/*
+	 * THE CTA POINTS AT THE SENIOR OPEN MARKET, whichever one that is.
+	 *
+	 * It used to be hardcoded to `${symbol}-USDT`. That is still the answer for
+	 * every coin in the registry today, and it is no longer an answer this file
+	 * is entitled to assume: a coin whose USDT market is closed, or which is
+	 * written the other way round, would get a button linking to a market the
+	 * venue answers 404 for — on the page a miner lands on.
+	 */
+	const senior = marketsFor(coin)[0];
+	const pair = senior === undefined ? undefined : senior.replace("-", "/");
 	switch (coin.status) {
 		case "live":
 			return {
 				title: `Trade ${coin.symbol} — buy and sell ${coin.name} | Blockle Exchange`,
 				h1: `Trade ${coin.name} (${coin.symbol})`,
 				lede:
-					`${coin.symbol} trades against USDT and against BLOCK on Blockle ` +
-					`Exchange. Deposit from your miner or your wallet, sell into ${pair}, ` +
-					"and withdraw.",
-				cta: { label: `Trade ${pair}`, href: `${SITE}/app.html#/trade/${coin.symbol}-USDT` },
+					`${coin.symbol} trades against ${andList(counterparts(coin))} on ` +
+					"Blockle Exchange. Deposit from your miner or your wallet, sell into " +
+					`${pair ?? "the market"}, and withdraw.`,
+				cta:
+					senior === undefined
+						// A "live" coin with no open market should be impossible —
+						// canGoLive refuses the promotion. If it happens anyway, the
+						// page sends people to the market list rather than to a 404.
+						? { label: "Open the exchange", href: `${SITE}/app.html#/markets` }
+						: { label: `Trade ${pair!}`, href: `${SITE}/app.html#/trade/${senior}` },
 				statusLine: "Market open",
 			};
 		case "integrating":
@@ -307,19 +360,30 @@ const org = {
 /** One coin page. */
 export function coinPage(coin: ListedCoin): string {
 	const h = headline(coin);
-	const markets = QUOTES.filter((q) => q !== coin.symbol);
 	const live = coin.status === "live";
 
-	// Pairs are shown either way — a miner wants to know what it WILL trade
-	// against — but a pair that is not open is marked and is not a link.
-	const pairs = markets
-		.map((q) => {
-			const sym = `${coin.symbol}-${q}`;
-			return live
-				? `<a class="pair" href="/app.html#/trade/${esc(sym)}">${esc(coin.symbol)}/${esc(q)}</a>`
-				: `<span class="pair off">${esc(coin.symbol)}/${esc(q)} — not open</span>`;
-		})
-		.join("\n          ");
+	/*
+	 * Pairs are shown either way — a miner wants to know what it WILL trade
+	 * against — but only an open market is a link.
+	 *
+	 * The two cases come from different places on purpose. A live coin's chips
+	 * are REAL SYMBOLS from the venue, so the href resolves and the orientation
+	 * is the venue's own. A not-yet-live coin has no symbols, so its chips are
+	 * composed from the quote list and are plain text; composing hrefs for them
+	 * was how this file could publish a link to `BTC-ETH`.
+	 */
+	const pairs = (
+		live
+			? marketsFor(coin).map(
+					(sym) =>
+						`<a class="pair" href="/app.html#/trade/${esc(sym)}">` +
+						`${esc(sym.replace("-", "/"))}</a>`,
+				)
+			: QUOTES.filter((q) => q !== coin.symbol).map(
+					(q) =>
+						`<span class="pair off">${esc(coin.symbol)}/${esc(q)} — not open</span>`,
+				)
+	).join("\n          ");
 
 	const specs =
 		specRow("Algorithm", coin.algorithm) +
@@ -348,8 +412,9 @@ export function coinPage(coin: ListedCoin): string {
         <li><b>Deposit.</b> Your account gets an address that belongs only to
           you, so a payout straight from a pool is credited to you without a
           memo or a support ticket.</li>
-        <li><b>Sell.</b> ${esc(coin.symbol)} trades against USDT and against
-          BLOCK. Limit orders only — you set the price.</li>
+        <li><b>Sell.</b> ${esc(coin.symbol)} trades against
+          ${esc(andList(counterparts(coin)))}. Limit orders only — you set the
+          price.</li>
         <li><b>Withdraw.</b> The fee is the chain cost plus a margin, quoted
           before you confirm, and withdrawals are blocked rather than
           part-paid if the chain fee cannot be covered.</li>
@@ -405,8 +470,10 @@ ${specs}    </dl>
           ${pairs}
     </div>
     <p class="note">
-      Every coin here trades against USDT for the price people quote in, and
-      against BLOCK because this venue is built around it.
+      Every coin here trades against every quote this venue can actually settle
+      — today ${esc(andList(QUOTES))}. A quote whose deposits or withdrawals we
+      cannot open does not get a market, because a market that cannot settle is
+      worse than one that does not exist.
     </p>
   </section>
 
@@ -465,7 +532,7 @@ export function indexPage(): string {
   <p class="sub">
     We list proof-of-work coins that people actually mine and can barely sell —
     the ones a hobbyist finds on a pool and then discovers have two thin
-    markets anywhere. Every coin trades against USDT and against BLOCK.
+    markets anywhere. Every live coin trades against ${esc(andList(QUOTES))}.
   </p>
   <div class="row">
     <a class="cta" href="/app.html#/markets">Open the exchange</a>
@@ -509,8 +576,8 @@ ${rows}
 		title: "Small proof-of-work coin exchange — trade mined coins | Blockle Exchange",
 		description:
 			"Blockle Exchange lists proof-of-work coins with real miners and almost " +
-			"nowhere to sell. Every coin trades against USDT and BLOCK. See which " +
-			"coins are live and which are still being integrated.",
+			`nowhere to sell. Every live coin trades against ${QUOTES.join(", ")}. ` +
+			"See which coins are live and which are still being integrated.",
 		canonical: `${SITE}/coins`,
 		jsonLd: [
 			{

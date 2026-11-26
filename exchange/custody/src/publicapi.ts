@@ -43,7 +43,17 @@ import Database from "better-sqlite3";
 
 import { format, parse } from "./amount";
 import { ASSETS, assertCustodyId, assetDef, settlementAsset } from "./assets";
-import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
+import {
+	MARKETS as VENUE_MARKETS,
+	NOT_LISTED,
+	PENDING_SETTLEMENT,
+	QUOTE_SENIORITY,
+	Venue,
+	VenueError,
+	market as marketDef,
+	priceScale,
+	quoteFor,
+} from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
 import { Deposits, describeDeposit, listDepositAddresses } from "./deposits";
 import { BitGoDeposits } from "./bitgodeposits";
@@ -123,9 +133,20 @@ const LISTED: readonly string[] = (() => {
 		seen.add(m.base);
 		seen.add(m.quote);
 	}
-	// Quotes first — they are what people deposit to trade with — then the rest
-	// alphabetically, so the order is stable as assets are added.
-	const quotes = ["USDT", "BLOCK"].filter((q) => seen.has(q));
+	/*
+	 * Quotes first — they are what people deposit to trade with — then the rest
+	 * alphabetically, so the order is stable as assets are added.
+	 *
+	 * FROM QUOTE_SENIORITY, WHICH IS THE ONLY COPY OF THIS LIST. The literal
+	 * `["USDT", "BLOCK"]` survived the quote expansion here, and because the
+	 * asset SET is derived from VENUE_MARKETS the drift was invisible: nothing
+	 * was missing, BTC/ETH/SOL/USDC just fell through to the alphabetical tail
+	 * and sorted in among DINGO and PERBUG. So the asset pickers put the four
+	 * biggest quotes behind the smallest coins on the venue, which is precisely
+	 * the kind of harmless-looking sixth copy of a list that settlement.ts's
+	 * header exists to argue against.
+	 */
+	const quotes: readonly string[] = QUOTE_SENIORITY.filter((q) => seen.has(q));
 	const rest = [...seen].filter((a) => !quotes.includes(a)).sort();
 	return [...quotes, ...rest];
 })();
@@ -253,21 +274,57 @@ const MIME: Record<string, string> = {
 	".txt": "text/plain; charset=utf-8",
 };
 
-async function serveStatic(
-	req: IncomingMessage,
-	res: ServerResponse,
-	urlPath: string,
-	status = 200,
-): Promise<boolean> {
-	if (STATIC_DIR === "") return false;
-	// `/admin/` maps to admin.html. The trailing slash matters: the console
-	// fetches its API at the RELATIVE path `api/`, so serving it at `/admin`
-	// without the slash would resolve that to `/api/` at the root and 404 —
-	// the same mount-relative mistake the setup console made once already.
-	const wanted =
-		urlPath === "/" ? "/index.html"
-		: urlPath === "/admin" || urlPath === "/admin/" ? "/admin.html"
-		: urlPath;
+/*
+ * SINGLE-PAGE MOUNTS: A URL DIRECTORY THAT IS NOT A REAL DIRECTORY.
+ *
+ * The operator console is published at `/admin/` but its files are deployed
+ * FLAT into the static root — there is no `admin/` directory on disk. The
+ * mapping used to be a single special case for the document itself
+ * (`/admin/` -> `/admin.html`) and nothing else, which is exactly the bug
+ * this map exists to prevent:
+ *
+ *   admin.html says `<script src="admin.inline.js">`, the browser resolves
+ *   that against the mount to `/admin/admin.inline.js`, and that resolved to
+ *   `<STATIC_DIR>/admin/admin.inline.js` — a path that has never existed. The
+ *   document returned 200 and its only script returned 404, so the console
+ *   rendered its markup, ran no code, and sat on the static placeholder
+ *   "checking session…" forever. Nothing was logged, because nothing failed
+ *   server-side: a missing file is a correct 404.
+ *
+ * So a mount now covers the WHOLE subtree, not just its index. Any asset
+ * requested under the mount also gets tried at the static root, which is
+ * where a flat deploy actually puts it. Add a mount here and its assets work;
+ * that is the property that was missing.
+ *
+ * The trailing slash in the key matters: the console fetches its API at the
+ * RELATIVE path `api/`, so serving the page at `/admin` without the slash
+ * would resolve that to `/api/` at the root.
+ */
+const PAGE_MOUNTS: Readonly<Record<string, string>> = {
+	"/admin/": "/admin.html",
+};
+
+/**
+ * The on-disk paths a URL may be served from, in priority order.
+ *
+ * Pure and exported so the mount rules are testable without a filesystem: the
+ * bug above was a routing mistake, and a routing mistake is only provable at
+ * the level that does the routing.
+ */
+export function staticCandidates(urlPath: string): readonly string[] {
+	if (urlPath === "/") return ["/index.html"];
+
+	for (const [mount, page] of Object.entries(PAGE_MOUNTS)) {
+		// `/admin` and `/admin/` both mean the console's document.
+		if (urlPath === mount || `${urlPath}/` === mount) return [page];
+		if (!urlPath.startsWith(mount)) continue;
+		const asset = urlPath.slice(mount.length);
+		// Literal path first, so a real subdirectory still wins if one is ever
+		// added; the flat-root fallback second. Traversal is not a concern
+		// here — every candidate is normalised and containment-checked by the
+		// caller before it is touched.
+		return [urlPath, `/${asset}`];
+	}
 
 	/*
 	 * EXTENSIONLESS URLS FOR THE COIN PAGES.
@@ -280,9 +337,19 @@ async function serveStatic(
 	 * that looks like a file must 404 rather than quietly becoming a directory
 	 * lookup.
 	 */
-	const candidates = extname(wanted) === ""
-		? [wanted, `${wanted.replace(/\/$/, "")}/index.html`]
-		: [wanted];
+	return extname(urlPath) === ""
+		? [urlPath, `${urlPath.replace(/\/$/, "")}/index.html`]
+		: [urlPath];
+}
+
+async function serveStatic(
+	req: IncomingMessage,
+	res: ServerResponse,
+	urlPath: string,
+	status = 200,
+): Promise<boolean> {
+	if (STATIC_DIR === "") return false;
+	const candidates = staticCandidates(urlPath);
 	let file = "";
 	for (const candidate of candidates) {
 		const rel = normalize(candidate).replace(
@@ -748,12 +815,16 @@ async function venueRoute(
 				throw new VenueError('side must be "buy" or "sell"');
 			}
 			const bd = assetDef(m.base).decimals;
-			const qd = assetDef(m.quote).decimals;
+			// A PRICE SCALES BY priceScale(m), NOT BY THE QUOTE'S DECIMALS. On a
+			// market with priceDecimals the two differ, and using the quote's
+			// alone would place this order at 10^priceDecimals times the wrong
+			// price without raising anything. See priceScale.
+			const ps = priceScale(m);
 			const r = venue.placeOrder({
 				accountId: who,
 				market: m.symbol,
 				side,
-				price: parse(str(b, "price"), { symbol: m.quote, decimals: qd }),
+				price: parse(str(b, "price"), { symbol: m.quote, decimals: ps }),
 				baseAmount: parse(str(b, "amount"), { symbol: m.base, decimals: bd }),
 			});
 			json(res, 200, {
@@ -771,10 +842,9 @@ async function venueRoute(
 			json(res, 200, venue.myOrders(who).map((o) => {
 				const m = VENUE_MARKETS.find((x) => x.symbol === o.market)!;
 				const bd = assetDef(m.base).decimals;
-				const qd = assetDef(m.quote).decimals;
 				return {
 					id: o.id, market: o.market, side: o.side, state: o.state,
-					price: fmt(o.price, qd),
+					price: fmt(o.price, priceScale(m)),
 					filled: fmt(o.baseFilled, bd),
 					total: fmt(o.baseTotal, bd),
 					createdAt: o.createdAt,
@@ -930,10 +1000,14 @@ async function venueRoute(
 			const symbol = url.searchParams.get("market") ?? "";
 			const m = marketDef(symbol);
 			const bd = assetDef(m.base).decimals;
+			// `qd` is for quote AMOUNTS (the capital, the total needed); `ps` is
+			// for PRICES (the mid, every rung). On a priceDecimals market they
+			// are different numbers and swapping them misprices the ladder.
 			const qd = assetDef(m.quote).decimals;
+			const ps = priceScale(m);
 			const q = mmQuote({
 				market: symbol,
-				mid: parse(url.searchParams.get("mid") ?? "0", { symbol: m.quote, decimals: qd }),
+				mid: parse(url.searchParams.get("mid") ?? "0", { symbol: m.quote, decimals: ps }),
 				spreadBps: Number(url.searchParams.get("spreadBps") ?? "0"),
 				rungs: Number(url.searchParams.get("rungs") ?? "0"),
 				baseCapital: parse(url.searchParams.get("base") ?? "0", { symbol: m.base, decimals: bd }),
@@ -946,8 +1020,8 @@ async function venueRoute(
 				note: q.note,
 				baseNeeded: fmt(q.baseNeeded, bd),
 				quoteNeeded: fmt(q.quoteNeeded, qd),
-				bids: q.bids.map((b) => ({ price: fmt(b.price, qd), amount: fmt(b.base, bd) })),
-				asks: q.asks.map((a) => ({ price: fmt(a.price, qd), amount: fmt(a.base, bd) })),
+				bids: q.bids.map((b) => ({ price: fmt(b.price, ps), amount: fmt(b.base, bd) })),
+				asks: q.asks.map((a) => ({ price: fmt(a.price, ps), amount: fmt(a.base, bd) })),
 			}, 0);
 			return;
 		}
@@ -957,12 +1031,12 @@ async function venueRoute(
 			json(res, 200, mm.list(who).map((pos) => {
 				const m = marketDef(pos.market);
 				const bd = assetDef(m.base).decimals;
-				const qd = assetDef(m.quote).decimals;
 				return {
 					id: pos.id,
 					market: pos.market,
 					state: pos.state,
-					mid: fmt(pos.mid, qd),
+					// A price, so it scales by priceScale and not by the quote.
+					mid: fmt(pos.mid, priceScale(m)),
 					spreadBps: pos.spreadBps,
 					rungs: pos.rungs,
 					orders: pos.orderIds.length,
@@ -984,7 +1058,9 @@ async function venueRoute(
 			const r = mm.open({
 				accountId: who,
 				market: symbol,
-				mid: parse(str(b, "mid"), { symbol: m.quote, decimals: qd }),
+				// The mid is a PRICE; the capital below is an AMOUNT. Same asset,
+				// two different scales on a priceDecimals market.
+				mid: parse(str(b, "mid"), { symbol: m.quote, decimals: priceScale(m) }),
 				spreadBps: Number(b.spreadBps),
 				rungs: Number(b.rungs),
 				baseCapital: parse(
@@ -1851,16 +1927,19 @@ export function start(): void {
 						200,
 						VENUE_MARKETS.map((m) => {
 							const last = venue.lastPrice(m.symbol);
-							const qd = assetDef(m.quote).decimals;
+							// Prices, so priceScale — the quote's decimals alone
+							// would publish a last/bid/ask 10^priceDecimals too
+							// large on the twelve markets that carry one.
+							const ps = priceScale(m);
 							const book = venue.book(m.symbol, 1);
 							return {
 								pair: `${m.base}/${m.quote}`,
 								market: m.symbol,
 								base: m.base,
 								quote: m.quote,
-								last: last === undefined ? null : fmt(last, qd),
-								bid: book.bids[0] === undefined ? null : fmt(book.bids[0].price, qd),
-								ask: book.asks[0] === undefined ? null : fmt(book.asks[0].price, qd),
+								last: last === undefined ? null : fmt(last, ps),
+								bid: book.bids[0] === undefined ? null : fmt(book.bids[0].price, ps),
+								ask: book.asks[0] === undefined ? null : fmt(book.asks[0].price, ps),
 								change24h: null,
 								volume24h: null,
 							};
@@ -1876,12 +1955,12 @@ export function start(): void {
 					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
 					if (m === undefined) { json(res, 404, { error: "unknown market" }); return; }
 					const bd = assetDef(m.base).decimals;
-					const qd = assetDef(m.quote).decimals;
+					const ps = priceScale(m);
 					const b = venue.book(sym);
 					json(res, 200, {
 						market: sym,
-						bids: b.bids.map((x) => ({ price: fmt(x.price, qd), base: fmt(x.base, bd) })),
-						asks: b.asks.map((x) => ({ price: fmt(x.price, qd), base: fmt(x.base, bd) })),
+						bids: b.bids.map((x) => ({ price: fmt(x.price, ps), base: fmt(x.base, bd) })),
+						asks: b.asks.map((x) => ({ price: fmt(x.price, ps), base: fmt(x.base, bd) })),
 					});
 					return;
 				}
@@ -1891,9 +1970,9 @@ export function start(): void {
 					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
 					if (m === undefined) { json(res, 404, { error: "unknown market" }); return; }
 					const bd = assetDef(m.base).decimals;
-					const qd = assetDef(m.quote).decimals;
+					const ps = priceScale(m);
 					json(res, 200, venue.recentTrades(sym).map((t) => ({
-						price: fmt(t.price, qd),
+						price: fmt(t.price, ps),
 						base: fmt(t.base, bd),
 						takerSide: t.takerSide,
 						at: t.at,
@@ -1901,12 +1980,71 @@ export function start(): void {
 					return;
 				}
 				if (p === "/markets") {
+					/*
+					 * `priceScale` IS PUBLISHED BECAUSE A CLIENT CANNOT DERIVE IT.
+					 *
+					 * `quoteDecimals` was enough to format a price while every
+					 * market had priceDecimals 0. It no longer is: a price carries
+					 * quoteDecimals + priceDecimals places, so a client that keeps
+					 * using quoteDecimals renders every PERBUG-BTC price 10,000
+					 * times too large and submits one 10,000 times too small.
+					 * Both are published, and which one to use is stated: amounts
+					 * take quoteDecimals, prices take priceScale.
+					 *
+					 * `state` and `closed` are published for the same reason the
+					 * generator keeps a refusal rather than a bare `continue` — a
+					 * market that refuses orders must say so where the customer
+					 * reads it, not only when they try to trade.
+					 */
 					json(res, 200, VENUE_MARKETS.map((m) => ({
 						symbol: m.symbol, base: m.base, quote: m.quote,
 						baseDecimals: assetDef(m.base).decimals,
 						quoteDecimals: assetDef(m.quote).decimals,
+						priceDecimals: m.priceDecimals,
+						priceScale: priceScale(m),
 						minBase: fmt(m.minBase, assetDef(m.base).decimals),
+						minNotional: fmt(m.minNotional, assetDef(m.quote).decimals),
+						state: m.closed === undefined ? "open" : "closed",
+						closed: m.closed ?? null,
+						/*
+						 * PUBLISHED BESIDE `state`, NOT INSTEAD OF IT.
+						 *
+						 * `state:"open"` plus a caveat is the honest answer for
+						 * the ten BLOCK markets: they take orders and settle
+						 * them, and BLOCK's deposits depend on our own node
+						 * while its withdrawals are released by hand. The
+						 * generator computed that sentence and nothing carried
+						 * it, so every client read "open" with no qualification
+						 * at all — which is why this is a field rather than a
+						 * note in a runbook. A client that does not know the
+						 * field is no worse off than before; one that does can
+						 * say "open, with a known gap".
+						 */
+						caveat: m.caveat ?? null,
+						listedAt: m.listedAt,
 					})), 300);
+					return;
+				}
+
+				/*
+				 * THE PAIRS THAT HAVE NO SYMBOL, AND WHY.
+				 *
+				 * Served because a settlement-gated venue refuses pairs, and a
+				 * refusal nobody can read is indistinguishable from a bug report.
+				 * "Everything should trade against BTC" meets "one satoshi is
+				 * worth more than one DINGO" somewhere, and this endpoint is where
+				 * the venue says which pairs that happened to instead of leaving
+				 * the customer to infer it from an absence.
+				 */
+				if (p === "/unlisted") {
+					json(res, 200, {
+						notListed: NOT_LISTED.map((x) => ({
+							base: x.base, quote: x.quote, why: x.why, blockedBy: x.blockedBy,
+						})),
+						pendingSettlement: PENDING_SETTLEMENT.map((x) => ({
+							base: x.base, quote: x.quote, why: x.why, blockedBy: x.blockedBy,
+						})),
+					}, 300);
 					return;
 				}
 

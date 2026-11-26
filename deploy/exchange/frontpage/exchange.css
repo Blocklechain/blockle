@@ -470,6 +470,141 @@ pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-sel
  * it used to be an inline style, which no media query can override. */
 .filter { width: 190px; }
 
+/* --------------------------------------------------------- the market filter
+ *
+ * WHY THIS IS MORE THAN A SEARCH BOX, in one line: the markets screen has to
+ * answer "everything quoted in BTC", "everything involving DINGO" and "which
+ * of these actually works" without the list becoming a wall. The reasoning
+ * lives above #/markets in app.html; what follows is only the dress.
+ *
+ * NOTHING NEW IS INVENTED HERE. The chips are the existing segmented-control
+ * idea at a smaller size, the status badge is `.pill`, the group headers and
+ * the cluster labels are the same 10px mono micro-label recipe as `thead th`
+ * and `.lbl`, and the depth ladder (--sunk inert, --raise-2 hover, --raise-3
+ * pressed) is used exactly as the rest of the file uses it. A filter that
+ * looked like a different product would read as a widget bolted on.
+ */
+
+.mktbar {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+.mktbar .end { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+.chiprail { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* THE RAIL SCROLLS ITSELF.
+ * Fourteen assets do not fit on a phone at any size that is still a touch
+ * target, and a bar that simply overflowed would widen the page — which makes
+ * the whole SCREEN scroll sideways instead of the one strip that needs to.
+ * Snapping is proximity, not mandatory: mandatory fights a flick that was
+ * meant to land between two chips. */
+.chiprail.scrollx {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  padding-bottom: 2px;
+}
+.chiprail .cluster { display: flex; align-items: center; gap: 6px; flex: none; }
+.chiprail .cluster + .cluster {
+  margin-left: 2px; padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  scroll-snap-align: start;
+  background: var(--sunk); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 9px;
+  font: 600 12px var(--sans); cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover { color: var(--ink); background: var(--raise-2); }
+.chip:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+.chip[aria-pressed="true"] {
+  background: var(--raise-3); color: var(--ink); border-color: var(--signal-dk);
+}
+.chip .coin { flex: none; border-radius: 50%; }
+/* The count is the chip's whole argument. "ETH 0" next to a reason is the
+ * honest answer to "where are my ETH pairs"; hiding the chip is not an answer,
+ * so an empty one is dimmed rather than dropped. */
+.chip .c { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.chip[aria-pressed="true"] .c { color: var(--ink-dim); }
+.chip.none { opacity: .55; }
+
+/* THE QUOTED-IN TOKEN.
+ *
+ * Same chip, one job different: the asset chips are toggles that live in the
+ * rail whether they are on or not, and this one only exists while its facet is
+ * on and only ever turns it off. It sits with the status and sort controls
+ * rather than in the rail, because it is not a thing you go looking for — it
+ * is a thing that appears to tell you why the list got short, in every sort
+ * order, including the ones that have no group headers to undo it from.
+ *
+ * It borrows the pressed look permanently (that is its only state) and adds a
+ * dismiss glyph. The glyph is dimmed until hover so the token reads as a
+ * label first and a button second. */
+.chip.qonly { background: var(--raise-3); color: var(--ink); border-color: var(--signal-dk); }
+.chip.qonly .x { color: var(--ink-faint); font-size: 14px; line-height: 1; margin-left: 1px; }
+.chip.qonly:hover .x { color: var(--ink); }
+
+.mktsort { display: flex; align-items: center; gap: 7px; }
+.mktsort select { width: auto; }
+
+/* The result count, in the micro-label voice so it reads as instrumentation
+ * rather than as prose. It is also the screen reader's only announcement that
+ * a facet changed anything, so it is never hidden. */
+.mktcount {
+  margin: 0 0 10px; min-height: 14px;
+  font: 600 10px/1.4 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Quote group headers inside the market table. */
+#t-markets tr.grp td {
+  background: var(--raise-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left; padding: 6px 12px;
+}
+#t-markets tr.grp .btn { margin-left: 8px; }
+#t-markets tbody tr.grp:hover td { background: var(--raise-2); }
+
+/* Pair cell: both marks, then BASE/QUOTE. The two marks overlap slightly and
+ * the upper one carries a knockout ring in the page colour so they read as one
+ * stacked object — a ring, not elevation; this stylesheet has no shadows. */
+.pairc { display: flex; align-items: center; gap: 9px; }
+.pairc .marks { display: flex; align-items: center; flex: none; }
+.pairc .marks .coin { border-radius: 50%; }
+.pairc .marks .coin + .coin { margin-left: -6px; box-shadow: 0 0 0 2px var(--ground); }
+.pairc .tk { font-weight: 600; }
+.pairc .nm { color: var(--ink-faint); font-size: 12px; }
+
+#t-markets a.pair { display: block; color: inherit; text-decoration: none; }
+#t-markets a.pair:hover .tk { color: var(--signal); }
+#t-markets a.pair:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+#t-markets tbody tr:hover td { background: var(--raise-2); }
+/* A closed market is dimmed but PRESENT, and it is not clickable — the thing
+ * you cannot do must not look like the thing you can. */
+#t-markets tbody tr.off { opacity: .55; }
+#t-markets tbody tr.off:hover td { background: none; }
+/* The gate's own sentence, under the status pill. The only cell on this screen
+ * allowed to wrap: a one-line reason is a truncated reason. */
+.why {
+  margin: 3px 0 0 auto;
+  font-size: 11.5px; line-height: 1.4; color: var(--ink-faint);
+  white-space: normal; max-width: 44ch; text-align: right;
+}
+
+/* The refusal panels. Left-aligned throughout — these are sentences, not
+ * figures, and the table default is right-aligned for numbers. */
+#t-never th, #t-never td, #t-pending th, #t-pending td { text-align: left; }
+#t-never td.wrap, #t-pending td.wrap { white-space: normal; max-width: 58ch; line-height: 1.45; }
+
+#s-markets > .panel + .panel,
+#s-markets > .panel + .msg,
+#s-markets > .msg + .panel { margin-top: 14px; }
+
 .msg {
   border-radius: 5px; padding: 10px 12px; font-size: 12.5px;
   border: 1px solid var(--line); background: var(--raise-2);
@@ -667,6 +802,36 @@ pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-sel
   .panel > header { padding: 11px 12px; }
   .panel > .body { padding: 12px; }
   tbody td, thead th { padding: 10px 8px; }
+
+  /* ---- the market filter on a phone
+   *
+   * The bar stacks and the chip rail becomes a scrolling strip. The quote
+   * chips are emitted first precisely so the two or three that answer most
+   * questions need no scrolling at all; everything past them is a flick away.
+   * `scroll-padding-left` matches the work pane's padding so a snapped chip
+   * does not sit flush against the edge.
+   */
+  .mktbar { flex-direction: column; align-items: stretch; }
+  .mktbar .end { margin-left: 0; flex-wrap: wrap; }
+  .chiprail.scrollx { scroll-padding-left: 12px; }
+  .chip { padding: 11px 12px; min-height: 44px; }
+  .mktsort { flex: 1 1 auto; }
+  .mktsort select { flex: 1 1 auto; }
+
+  /*
+   * BID AND ASK GO; SPREAD STAYS.
+   *
+   * Five columns is the most that fits beside a pair cell at 390px. Spread is
+   * the one derived number worth the width — it is the answer to "can I
+   * actually trade here" — and both sides of the book are on the trade screen
+   * anyway, one tap away. The group header rows are left alone: they are the
+   * main thing making a long list navigable on a small screen, and their
+   * colspan comes from the live header row, so a hidden column cannot leave
+   * them short.
+   */
+  #t-markets th:nth-child(3), #t-markets td:nth-child(3),
+  #t-markets th:nth-child(4), #t-markets td:nth-child(4) { display: none; }
+  .why { max-width: 24ch; }
 }
 
 /*

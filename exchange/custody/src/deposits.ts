@@ -36,6 +36,7 @@
 import type { Database } from "better-sqlite3";
 
 import { assetDef, networkOf, settlementAsset } from "./assets";
+import { railBlocker } from "./settlement";
 
 export class DepositError extends Error {
 	constructor(
@@ -302,6 +303,44 @@ export function describeDeposit(
 	}
 
 	const others = deposits.availableNetworks(userId, sym);
+
+	/*
+	 * A KNOWN CAUSE IS NAMED. This is the whole point of the change.
+	 *
+	 * The sentence below this block is TRUE for every absent address, which is
+	 * exactly why it was useless: "no address is provisioned" is what a
+	 * customer saw for ETH, for BNB and for SOL, while the real cause — a
+	 * custodian pricing gate on two of them and an unfunded wallet on the
+	 * third — sat in the service's own log. Two customers asked twice, and the
+	 * generic paragraph is what they were answered with both times.
+	 *
+	 * So when the cause is RECORDED AND MEASURED (settlement.RAIL_BLOCKERS), the
+	 * customer gets that sentence instead of the generic one. When it is not,
+	 * nothing changes: an unknown absence still falls through to the careful
+	 * wording below, because inventing a cause is worse than admitting none.
+	 *
+	 * ORDERED LIKE `settleable()`, DELIBERATELY. The rail blocker is checked
+	 * before the gas gate in `listDepositAddresses` for the same reason it is
+	 * here: a chain whose custodian will not mint an address at all cannot be
+	 * opened by funding a gas float, so the structural cause is the one worth
+	 * printing. The two causes stay separate — ETH tokens are shut for BOTH —
+	 * and each is true whenever it is the one shown.
+	 */
+	const blocker = railBlocker(asset, network);
+	const alsoAvailable =
+		others.length > 0 ? ` ${sym} is available on: ${others.join(", ")}.` : "";
+	if (blocker !== undefined) {
+		return {
+			asset: sym,
+			network: network ?? null,
+			address: null,
+			memo: null,
+			memoRequired: false,
+			reason: blocker.customer + alsoAvailable,
+			alternatives: others,
+		};
+	}
+
 	return {
 		asset: sym,
 		network: network ?? null,
@@ -314,9 +353,7 @@ export function describeDeposit(
 			" for this account yet. We will not show you an address we are not " +
 			"certain of — a deposit to a wrong address cannot be recovered by " +
 			"anyone." +
-			(others.length > 0
-				? ` ${sym} is available on: ${others.join(", ")}.`
-				: ""),
+			alsoAvailable,
 		alternatives: others,
 	};
 }
@@ -364,6 +401,33 @@ export async function listDepositAddresses(args: {
 
 		for (const net of chains) {
 			if (args.deposits.addressFor(args.userId, asset, net) === undefined) {
+				/*
+				 * A RAIL WITH A MEASURED BLOCKER IS NOT ASKED FOR AGAIN.
+				 *
+				 * Checked BEFORE the custodian, which is the point. Without this
+				 * the deposit page fired three doomed BitGo requests on every
+				 * single load — the service's log shows the same ETH 403, BNB 403
+				 * and SOL 202 repeating every few minutes, for a real customer,
+				 * forever — and then showed that customer a generic "no address
+				 * is provisioned". So this is both the honest answer and three
+				 * fewer round trips on the page that is already failing them.
+				 *
+				 * `describeDeposit` would reach the same sentence on its own, so
+				 * this block is about not making the call, not about the wording.
+				 */
+				const blocked = railBlocker(asset, net);
+				if (blocked !== undefined) {
+					out.push({
+						asset,
+						network: net ?? null,
+						address: null,
+						memo: null,
+						memoRequired: false,
+						open: false,
+						reason: blocked.customer,
+					});
+					continue;
+				}
 				/*
 				 * A CLOSED CHAIN IS REPORTED, NOT SKIPPED. "No address shown" and
 				 * "this chain is shut until we fund its gas" look identical on a

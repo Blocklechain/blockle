@@ -8,6 +8,24 @@
 // transfer arrived at. So attribution is exact without custody being
 // fragmented.
 //
+// THAT PARAGRAPH IS ONLY TRUE OF UTXO AND EVM CHAINS, AND THE MISSING CAVEAT
+// COST US A RAIL. On an ACCOUNT-MODEL chain — Solana is the one that matters
+// here — a receive address is its own on-chain account, and a deposit to it
+// does NOT join a pooled balance. It sits there until an explicit
+// CONSOLIDATION moves it, which BitGo documents as a manual operation on
+// Solana (fees paid in SOL by each receive address, up to 25 owner addresses
+// per transaction). This service has no consolidation code — `grep -n
+// consolidat src/` finds comments and no call site — so for Solana the three
+// clauses above are each false: there IS a sweep, it IS an internal transfer,
+// and it DOES need a second signature.
+//
+// Two consequences, both recorded in settlement.RAIL_BLOCKERS.SOL so they
+// cannot be lost again: activating the Solana wallet would open a rail that
+// takes deposits it cannot send back, and `BitGoHoldings.holdings` may read
+// per-account deposit balances as a SHORTFALL rather than as custody. The
+// sentence this comment replaces is why nobody built the consolidation path:
+// it said, in the file that creates the addresses, that no sweep was needed.
+//
 // WHY NOT ONE ADDRESS FOR EVERYONE. Because then two customers depositing the
 // same amount in the same hour are indistinguishable, and the venue is reduced
 // to asking people for transaction hashes and believing them. Every exchange
@@ -39,6 +57,7 @@
 
 import { parseBaseUnits } from "./bitgo";
 import { BitGoError, BitGoHttp, type BitGoEnv } from "./bitgohttp";
+import { SOL_ACTIVATION } from "./settlement";
 
 export interface DepositClientConfig {
 	readonly env: BitGoEnv;
@@ -160,13 +179,33 @@ export class BitGoDeposits {
 			 */
 			const reason = (body.error ?? "").trim();
 			if (reason !== "" || body.pendingChainInitialization === true) {
+				/*
+				 * "A SMALL AMOUNT" IS NOT AN AMOUNT. That is what this message used
+				 * to say, and an operator cannot act on it: too little and the
+				 * wallet activates with nothing left to pay a fee with, because
+				 * BitGo's `minimumFunding` must STAY on the wallet and cannot be
+				 * spent. So for the one coin whose figures have actually been
+				 * measured, the message names them — see settlement.SOL_ACTIVATION
+				 * and ops/bitgo-deposit-rails.md. For any other coin it stays
+				 * vague, honestly, rather than inventing a number for a chain
+				 * nobody has read the reserve of.
+				 */
+				const how =
+					args.coin === "sol"
+						? `send ${SOL_ACTIVATION.recommendedLamports} lamports (0.01 SOL) ` +
+							`to ${SOL_ACTIVATION.rootAddress} — the wallet's own root ` +
+							`address, and the only correct destination. BitGo's ` +
+							`unspendable reserve is ${SOL_ACTIVATION.minimumFundingLamports} ` +
+							`lamports, so sending exactly the minimum leaves no fee ` +
+							`headroom. Run ops/activate-sol-wallet.sh to verify first`
+						: `send a small amount to the ${args.coin} wallet's own receive ` +
+							"address to activate it";
 				throw new BitGoError(
 					`BitGo cannot issue a ${args.coin} receive address yet: ` +
 						`${reason === "" ? "wallet pending on-chain initialization" : reason}. ` +
 						"Account-based chains must exist on-chain before they can derive " +
-						`addresses — send a small amount to the ${args.coin} wallet's own ` +
-						"receive address to activate it, then this will succeed. No " +
-						"customer address is stored in the meantime.",
+						`addresses — ${how}, then this will succeed. No customer address ` +
+						"is stored in the meantime.",
 				);
 			}
 			throw new BitGoError(

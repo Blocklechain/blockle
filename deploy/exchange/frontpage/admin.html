@@ -77,6 +77,56 @@
   .banner.ok { border-color: var(--line); background: var(--raise); }
   .banner.ok h3 { color: var(--up); }
 
+  /* -------------------------------------------------------------------------
+     BOOT WATCHDOG — DELIBERATELY CSS, NOT JAVASCRIPT.
+     -------------------------------------------------------------------------
+     The whole failure this guards against is "the page's JavaScript never
+     ran", so it cannot be guarded by JavaScript. On 2026-11-25 this console
+     was served at /admin/ while admin.inline.js was deployed flat at the
+     static root; the browser resolved the relative <script src> to
+     /admin/admin.inline.js, got a 404, executed nothing, and left the markup's
+     placeholder "checking session…" on screen indefinitely. The document was
+     200, the API was healthy, and nothing anywhere logged an error.
+
+     It is also not an inline <script> or an onerror= attribute, because the
+     CSP this page is served under is `script-src 'self'` — both are blocked.
+     An inline-script watchdog would itself have been silently dead, which is
+     the same class of bug wearing a different hat.
+
+     So: the banner below is hidden, and a CSS animation with a delay reveals
+     it. admin.inline.js adds `booted` to <html> as its very first statement,
+     which cancels the animation. Script 404ed, blocked by CSP, truncated, or
+     a syntax error anywhere before that first line — all of them leave the
+     class unset and all of them surface the same honest message.
+
+     visibility + max-height rather than `display`, because discrete `display`
+     animation is recent and this must work in whatever browser the operator
+     has open during an incident. 1ms duration makes it a step, not a fade. */
+  #bootfail {
+    visibility: hidden;
+    max-height: 0;
+    overflow: hidden;
+    margin: 0;
+    animation: bootfail-reveal 1ms linear 6s forwards;
+  }
+  @keyframes bootfail-reveal {
+    to { visibility: visible; max-height: 40em; }
+  }
+  /* The script ran. Belt and braces: cancel the animation AND restate the
+     hidden values, so this wins no matter how the cascade is resolved. */
+  html.booted #bootfail {
+    animation: none;
+    visibility: hidden;
+    max-height: 0;
+  }
+  #bootfail code {
+    font: 11.5px/1.5 var(--mono); color: var(--ink);
+    background: var(--raise-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  #bootfail ol { margin: 8px 0 0; padding-left: 20px; }
+  #bootfail li { color: var(--ink-dim); font-size: 13px; margin-bottom: 4px; }
+
   details.card {
     background: var(--raise); border: 1px solid var(--line); border-radius: 8px;
     margin-bottom: 14px;
@@ -208,6 +258,29 @@
     <span class="tag">Operator</span>
     <span class="who" id="who">checking session…</span>
   </header>
+
+  <!-- Revealed by CSS alone, ~6s after load, if admin.inline.js never ran.
+       See the #bootfail rules above for why this is not a script. -->
+  <div id="bootfail" class="banner">
+    <h3>The console's script did not run</h3>
+    <p style="margin:0;color:var(--ink-dim);font-size:13px">
+      This page loaded, but <code>admin.inline.js</code> never executed, so the
+      session was never actually checked and nothing below is real. The API and
+      your account are probably fine — this is a delivery problem with the page
+      itself.
+    </p>
+    <ol>
+      <li>Open <code>admin.inline.js</code> relative to this page. It must
+        return JavaScript with <code>200</code>. A <code>404</code>, or a JSON
+        <code>{"error":"not found"}</code>, means the file is not being served
+        at this mount point.</li>
+      <li>Check the browser console for a Content-Security-Policy violation —
+        this page is served under <code>script-src 'self'</code>.</li>
+      <li>On the box: <code>ls /var/www/exchange-frontpage/</code> and confirm
+        <code>admin.inline.js</code> is present, then
+        <code>journalctl -u exchange-public-api -n 50</code>.</li>
+    </ol>
+  </div>
 
   <div id="banner"></div>
 

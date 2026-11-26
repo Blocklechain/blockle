@@ -24,6 +24,8 @@ import {
 	marketsFor,
 	type ListedCoin,
 } from "../src/listed";
+import { QUOTE_SENIORITY } from "../src/settlement";
+import { OPEN_MARKETS } from "../src/venue";
 
 const ok = {
 	reachable: true,
@@ -171,21 +173,70 @@ test("a coin already live is not promoted again", () => {
 
 // -------------------------------------------------------------------- markets
 
-test("markets exist only for live coins, and always against both quotes", () => {
+/*
+ * THESE THREE USED TO PIN THE TWO-QUOTE SHAPE LITERALLY — `["RTM-USDT",
+ * "RTM-BLOCK"]`, `["BLOCK-USDT"]`, `[...QUOTES] === ["USDT", "BLOCK"]`.
+ *
+ * A literal was right while this file OWNED the quote list. It no longer does:
+ * `QUOTES` and `marketsFor` are read off the venue's open markets, exactly so
+ * that this registry cannot claim a pair the matcher does not have. Re-pinning
+ * the new list literally would recreate the thing being fixed — a second copy
+ * of the venue's market table, in a test, which passes on the day it is typed
+ * and fails the next time a rail opens even though nothing is wrong.
+ *
+ * So they assert the PROPERTIES that have to hold whatever the quote set is.
+ */
+
+test("markets exist only for live coins, and every one is a real venue symbol", () => {
 	assert.deepEqual(marketsFor(coin()), [], "planned coins have no markets");
 	assert.deepEqual(marketsFor(coin({ status: "integrating" })), []);
-	assert.deepEqual(marketsFor(coin({ status: "live" })), ["RTM-USDT", "RTM-BLOCK"]);
+
+	const rtm = marketsFor(coin({ status: "live" }));
+	assert.ok(rtm.length >= 2, `a live coin needs real markets, got ${rtm.join(",")}`);
+	for (const sym of rtm) {
+		// THE POINT OF THE CHANGE. seogen.ts turns each of these into an href, so
+		// a composed-but-nonexistent symbol is a 404 on a published page. Only a
+		// symbol the venue actually has may appear here.
+		const m = OPEN_MARKETS.find((x) => x.symbol === sym);
+		assert.ok(m !== undefined, `${sym} is published but is not an open venue market`);
+		assert.ok(
+			m!.base === "RTM" || m!.quote === "RTM",
+			`${sym} is listed as one of RTM's markets but RTM is not in it`,
+		);
+	}
+	// Senior first, because the page's single CTA is markets[0].
+	assert.equal(rtm[0], "RTM-USDT");
 });
 
-test("BLOCK does not trade against itself", () => {
-	assert.deepEqual(
-		marketsFor(coin({ symbol: "BLOCK", status: "live" })),
-		["BLOCK-USDT"],
+test("a coin never trades against itself, whichever side it lands on", () => {
+	// The self-pair guard, asked of the registry rather than of the generator.
+	// BLOCK is the case that matters: it is both a quote and a listed coin, so it
+	// is the one asset that could be emitted as BLOCK-BLOCK.
+	for (const sym of marketsFor(coin({ symbol: "BLOCK", status: "live" }))) {
+		const [base, quote] = sym.split("-");
+		assert.notEqual(base, quote, `${sym} trades against itself`);
+	}
+	assert.ok(
+		!marketsFor(coin({ symbol: "BLOCK", status: "live" })).includes("BLOCK-BLOCK"),
 	);
 });
 
-test("both quote assets are present, because that was the requirement", () => {
-	assert.deepEqual([...QUOTES], ["USDT", "BLOCK"]);
+test("the quote list is the venue's, not this file's", () => {
+	// It was a second `["USDT", "BLOCK"]` literal here, independent of venue.ts.
+	// Asserting the derivation rather than the contents is what makes the two
+	// unable to drift — which is the failure this file's own header describes.
+	assert.deepEqual(
+		[...QUOTES],
+		QUOTE_SENIORITY.filter((q) => OPEN_MARKETS.some((m) => m.quote === q)),
+	);
+	assert.ok(QUOTES.includes("USDT"), "USDT is what people price in");
+	assert.ok(QUOTES.includes("BLOCK"), "BLOCK is the other half of this venue");
+	for (const q of QUOTES) {
+		assert.ok(
+			OPEN_MARKETS.some((m) => m.quote === q),
+			`${q} is advertised as a quote but no open market uses it`,
+		);
+	}
 });
 
 // ------------------------------------------------------------------- the data

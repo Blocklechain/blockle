@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { LISTED, type ListedCoin } from "../src/listed";
+import { LISTED, marketsFor, type ListedCoin } from "../src/listed";
 import {
 	SITE,
 	coinPage,
@@ -79,8 +79,20 @@ test("a live coin's page is the only one that invites a trade", () => {
 	assert.match(html, /<title>Trade RTM — buy and sell Raptoreum/);
 	assert.match(html, /app\.html#\/trade\/RTM-USDT/);
 	assert.match(html, /Market open/);
-	// And the closed-market marker is gone.
-	assert.ok(!/not open/.test(html));
+	// AND THE CLOSED-MARKET MARKER IS GONE. Matched on the marker's own markup
+	// rather than on the words "not open", which this page now contains in
+	// prose ("a quote whose deposits we canNOT OPEN does not get a market") —
+	// a substring match that read as a strict check and had become a false
+	// positive on a page that was perfectly correct.
+	assert.ok(!/class="pair off"/.test(html), "a live coin has no unopened-pair chips");
+	assert.ok(!/— not open/.test(html));
+	// Every pair chip on a live page is a link to a symbol the venue has.
+	for (const sym of marketsFor(as("live"))) {
+		assert.ok(
+			html.includes(`/app.html#/trade/${sym}"`),
+			`${sym} should be linked from the live page`,
+		);
+	}
 });
 
 test("the headline function is the single decision point", () => {

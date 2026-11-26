@@ -220,12 +220,32 @@
             <tr><th>Pair</th><th>Last</th><th>24h</th><th>24h volume</th></tr>
           </thead>
           <tbody id="mrows">
-            <!-- Rendered from /exchange-api/public/tickers. Dashes until real
-                 data arrives — never placeholder numbers that look real. -->
-            <tr><td class="pair">BLOCK/BTC</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
-            <tr><td class="pair">PERBUG/BTC<small>sha256d, BLOCK-aux merged</small></td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
-            <tr><td class="pair">BTC/USDC</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
-            <tr><td class="pair">ETH/USDC</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+            <!--
+              NO PAIR NAMES ARE WRITTEN HERE, AND THAT IS A CORRECTION.
+
+              This block used to ship four rows — BLOCK/BTC, PERBUG/BTC,
+              BTC/USDC, ETH/USDC — as "placeholders" to be overwritten by
+              /public/tickers. None of the four was a market the venue traded.
+              Rule 1 at the top of this file bans placeholder NUMBERS that look
+              real; a placeholder PAIR is the same lie about a different column,
+              and index.inline.js deliberately fails silent, so whenever the API
+              was unreachable a stranger read four markets we do not have.
+
+              BLOCK/BTC was also a breach of the BLOCK rule by one
+              multiplication: a BTC-denominated BLOCK price plus any BTC/USD
+              figure anywhere is a dollar price for BLOCK. The venue does not
+              and will not list it — one satoshi is worth more than one BLOCK,
+              so the price is not even expressible — and it has no business
+              being advertised here.
+
+              So the only thing stated before the feed answers is that we are
+              fetching. The pair list is the venue's to report, not this file's
+              to guess.
+            -->
+            <tr id="mrows-wait">
+              <td class="pair">Loading markets…</td>
+              <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+            </tr>
           </tbody>
         </table>
       </div>

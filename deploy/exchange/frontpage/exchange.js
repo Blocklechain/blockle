@@ -56,13 +56,24 @@
     return td;
   }
 
+  /**
+   * A coin mark as a node.
+   *
+   * coins.js is the only HTML this file injects (rule 3 at the top), and this
+   * is the one place that does it, so there is a single line to audit rather
+   * than one per table that shows an asset.
+   */
+  function coinMark(symbol, size) {
+    var host = document.createElement("span");
+    host.innerHTML = coinIcon(symbol, size);
+    return host.firstChild;
+  }
+
   /** Asset cell: mark, ticker, full name. */
   function assetCell(row, symbol, network) {
     var td = document.createElement("td");
     var wrap = el("div", "asset");
-    var mark = document.createElement("span");
-    mark.innerHTML = coinIcon(symbol, 22);
-    wrap.appendChild(mark.firstChild);
+    wrap.appendChild(coinMark(symbol, 22));
     var txt = el("div");
     txt.appendChild(el("div", "tk", symbol));
     txt.appendChild(el("div", "nm", network ? coinIcon.network(network) : coinIcon.fullName(symbol)));
@@ -151,8 +162,16 @@
   // ------------------------------------------------------------------ app state
 
   var STATE = {
-    markets: [],       // [{base, quote, symbol}]
+    markets: [],       // [{symbol, base, quote, baseDecimals, quoteDecimals, minBase, state}]
     tickers: [],
+    // The assets the venue quotes IN, in the order it emitted them. Derived
+    // from the market list rather than written down here — see mktQuoteOrder
+    // for why a written-down copy is this subsystem's recurring bug.
+    quotes: [],
+    // Pairs with no market at all, each carrying the venue's own reason.
+    // Empty until the server publishes them, and an empty list renders
+    // nothing rather than an empty panel.
+    notListed: [],
     assets: [],        // tickers of everything listed
     balances: [],
     fees: null,        // {makerPct, takerPct, makerBps, takerBps, note}
@@ -271,51 +290,887 @@
   }
 
   // ------------------------------------------------------------------- markets
+  //
+  // THE MARKET FILTER.
+  //
+  // The product argument for it lives above #/markets in app.html. What
+  // matters here is the shape of the code, and there is exactly one rule:
+  //
+  //   EVERYTHING BETWEEN THE "PURE BLOCK" SENTINELS BELOW IS DATA IN, DATA
+  //   OUT. No DOM, no fetch, no storage, no clock.
+  //
+  // markets.harness.js slices that region out of THIS FILE and drives it, so
+  // the filter's behaviour is checked against the bytes that ship rather than
+  // against a copy of them that drifts. Put DOM work on the other side of the
+  // sentinels; a `document.` reference inside the block breaks the harness,
+  // which is the point.
+  //
+  // ===== MARKET FILTER — PURE BLOCK BEGINS =====
 
-  function spreadOf(bid, ask) {
-    // Pixels and percentages are presentational, so a double is fine here;
-    // nothing derived from it is ever posted back or stored.
+  function mktFilterDefault() {
+    return { text: "", assets: [], quoteOnly: null, open: true, sort: "pair", cleared: false };
+  }
+
+  function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+  function cmpPair(a, b) { return cmpStr(a.base, b.base) || cmpStr(a.quote, b.quote); }
+
+  /* The words that mean "this book is taking orders". Everything else closes
+   * it — see mktState. */
+  var MKT_OPEN_WORDS = { open: 1, live: 1, trading: 1 };
+
+  /**
+   * Is this market accepting orders?
+   *
+   * TWO DEFAULTS, AND THEY POINT OPPOSITE WAYS ON PURPOSE.
+   *
+   * A state word this client has never heard of FAILS CLOSED. An unrecognised
+   * status is not evidence that orders are accepted, and the one error that
+   * costs a customer money is presenting a market that cannot settle as
+   * tradeable.
+   *
+   * No state field AT ALL fails OPEN, because that is the server as it stands
+   * today: /public/tickers emits no status and every market it lists is live.
+   * Defaulting that to "closed" would paint the entire working venue as shut
+   * on the deploy before the server learns to report state — a false alarm
+   * covering a real list.
+   */
+  function mktState(row) {
+    if (!row) return "open";
+    var s = row.state || row.status;
+    if (typeof s === "string" && s !== "") {
+      return MKT_OPEN_WORDS[s.toLowerCase()] ? "open" : "closed";
+    }
+    if (row.closed === true) return "closed";
+    if (typeof row.closed === "string" && row.closed !== "") return "closed";
+    return "open";
+  }
+
+  /**
+   * The venue's own sentence about why a market is shut.
+   *
+   * Printed verbatim rather than mapped to our own wording: the gate that
+   * refuses an order and the row that explains the refusal must say the same
+   * thing, or a support conversation becomes a translation exercise. The
+   * fallback is deliberately vague because inventing a specific reason would
+   * be worse than admitting we were not told one.
+   */
+  function mktReason(row) {
+    if (!row) return "";
+    var r = row.closedReason || row.reason || row.why;
+    if (typeof r === "string" && r !== "") return r;
+    if (typeof row.closed === "string" && row.closed !== "") return row.closed;
+    return mktState(row) === "closed"
+      ? "Not accepting new orders. Open orders can still be cancelled."
+      : "";
+  }
+
+  function mktAssetName(sym) {
+    return typeof coinIcon !== "undefined" && coinIcon && coinIcon.fullName
+      ? String(coinIcon.fullName(sym)).toUpperCase()
+      : String(sym || "").toUpperCase();
+  }
+
+  /**
+   * Text match, on BOTH sides of the slash, by ticker and by full name.
+   *
+   * The predicate this replaces matched the pair string plus the BASE's full
+   * name, so "Tether" found nothing at all and a search for a coin that is
+   * somebody's quote found only the markets where it happened to be the base.
+   * "Everything with DINGO in it" has to work from either side or the search
+   * box is not the thing people reach for.
+   */
+  function mktMatch(row, q) {
+    if (!q) return true;
+    var pair = String(row.pair || (row.base + "/" + row.quote)).toUpperCase();
+    if (pair.indexOf(q) >= 0) return true;
+    if (String(row.market || "").toUpperCase().indexOf(q) >= 0) return true;
+    if (mktAssetName(row.base).indexOf(q) >= 0) return true;
+    if (mktAssetName(row.quote).indexOf(q) >= 0) return true;
+    return false;
+  }
+
+  /**
+   * The four facets, applied in one pass.
+   *
+   * `quoteOnly` and `assets` are an AND, not a choice between them: "involves
+   * DOGE" plus "quoted in BTC" is DOGE/BTC, which is a reasonable thing to
+   * ask for and is exactly what the two controls together say.
+   */
+  function mktFilter(rows, f) {
+    var q = String(f.text || "").trim().toUpperCase();
+    var want = f.assets || [];
+    return rows.filter(function (r) {
+      if (f.open && mktState(r) !== "open") return false;
+      if (f.quoteOnly && r.quote !== f.quoteOnly) return false;
+      if (want.length && want.indexOf(r.base) < 0 && want.indexOf(r.quote) < 0) return false;
+      return mktMatch(r, q);
+    });
+  }
+
+  /**
+   * The spread, as a number.
+   *
+   * Percentages are presentational, so a double is fine here and nothing
+   * derived from it is ever posted back or stored (rule 1 at the top of this
+   * file). Note WHAT it is: a ratio of ONE market's own two sides. It is
+   * dimensionless, so it cannot turn into a price denominated in some other
+   * asset — which is the property that keeps this screen on the right side of
+   * the BLOCK rule. See mktCounts.
+   */
+  function spreadPct(row) {
+    var bid = row && row.bid, ask = row && row.ask;
     if (!bid || !ask) return null;
     var b = parseFloat(bid), a = parseFloat(ask);
     if (!(b > 0) || !(a > 0)) return null;
-    return (((a - b) / a) * 100).toFixed(3) + "%";
+    return ((a - b) / a) * 100;
   }
+
+  function spreadOf(bid, ask) {
+    var p = spreadPct({ bid: bid, ask: ask });
+    return p === null ? null : p.toFixed(3) + "%";
+  }
+
+  /**
+   * Sorting. Three orders, all of them over fields the server populates.
+   *
+   * There is no "by volume" and no "by 24h change" because /public/tickers
+   * hardcodes both to null. A sort control over a field the server never
+   * fills is a control that does nothing and looks like it did.
+   */
+  function mktSort(rows, how) {
+    var out = rows.slice();
+    if (how === "spread") {
+      out.sort(function (a, b) {
+        var x = spreadPct(a), y = spreadPct(b);
+        // A book with only one side has NO spread, which is not a tight one.
+        // Those rows go last rather than sorting as zero and pretending to be
+        // the best markets on the venue.
+        if (x === null && y === null) return cmpPair(a, b);
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return (x - y) || cmpPair(a, b);
+      });
+      return out;
+    }
+    if (how === "traded") {
+      out.sort(function (a, b) {
+        return ((b.last ? 1 : 0) - (a.last ? 1 : 0)) || cmpPair(a, b);
+      });
+      return out;
+    }
+    out.sort(cmpPair);
+    return out;
+  }
+
+  /**
+   * Per-asset market counts, for the chips.
+   *
+   * NOTE WHAT IS COUNTED AND WHAT NEVER IS. These are counts of MARKETS —
+   * never a price, never a total, and never anything obtained by combining
+   * one market's price with another's. That is not tidiness: BLOCK is priced
+   * only in BLOCK on this venue, and a screen that starts doing arithmetic
+   * ACROSS markets can produce a dollar figure for BLOCK by one
+   * multiplication without anybody deciding to. There is no rate or
+   * conversion helper anywhere on this screen, and markets.harness.js asserts
+   * there is not.
+   *
+   * Counted over the STATUS-SCOPED rows and deliberately not over the asset-
+   * or text-filtered ones: a count that moved when you pressed a chip could
+   * not be used to decide which chip to press next.
+   */
+  function mktCounts(rows) {
+    var involves = {}, quoted = {}, assets = [];
+    rows.forEach(function (r) {
+      [r.base, r.quote].forEach(function (a) {
+        if (involves[a] === undefined) { involves[a] = 0; assets.push(a); }
+        involves[a] += 1;
+      });
+      quoted[r.quote] = (quoted[r.quote] || 0) + 1;
+    });
+    assets.sort(cmpStr);
+    return { involves: involves, quoted: quoted, assets: assets };
+  }
+
+  /**
+   * Which assets are quotes, in the venue's order.
+   *
+   * DERIVED, NOT LISTED. An asset is a quote here because some market quotes
+   * in it — there is no array of quote tickers in this file any more. The one
+   * that used to be here (`a === "USDT" || a === "BLOCK"`, ordering the asset
+   * pickers) was the fifth independent copy of the venue's quote list, and
+   * the copies drifting apart is this subsystem's recurring bug rather than a
+   * hypothetical one. `hint` carries the order /public/markets emitted, which
+   * is the venue's own seniority; anything the hint does not mention falls
+   * back to how many markets quote in it.
+   */
+  function mktQuoteOrder(rows, hint) {
+    var counts = mktCounts(rows).quoted;
+    var order = hint || [];
+    return Object.keys(counts).sort(function (a, b) {
+      var ia = order.indexOf(a), ib = order.indexOf(b);
+      if (ia < 0) ia = order.length;
+      if (ib < 0) ib = order.length;
+      return (ia - ib) || (counts[b] - counts[a]) || cmpStr(a, b);
+    });
+  }
+
+  /**
+   * The chip rail: two clusters, both derived.
+   *
+   * Quotes first, because those are the chips that answer the question people
+   * arrive with, then everything that only ever appears as a base. Built from
+   * ALL rows rather than the filtered ones so a quote whose every market is
+   * currently closed still gets a chip reading 0 — "ETH 0" beside its reason
+   * is the honest answer to "where are my ETH pairs", and hiding the chip is
+   * not an answer at all.
+   */
+  function mktRail(allRows, order) {
+    var all = mktCounts(allRows);
+    var quotes = [], coins = [];
+    all.assets.forEach(function (a) { (all.quoted[a] ? quotes : coins).push(a); });
+    quotes.sort(function (a, b) {
+      var ia = order.indexOf(a), ib = order.indexOf(b);
+      if (ia < 0) ia = order.length;
+      if (ib < 0) ib = order.length;
+      return (ia - ib) || cmpStr(a, b);
+    });
+    coins.sort(cmpStr);
+    var out = [];
+    if (quotes.length) out.push({ label: "Quotes", assets: quotes });
+    if (coins.length) out.push({ label: "Coins", assets: coins });
+    return out;
+  }
+
+  /** Rows cut into quote groups, in the venue's quote order. */
+  function mktGroups(rows, order) {
+    var byQuote = {}, qs = [];
+    rows.forEach(function (r) {
+      if (!byQuote[r.quote]) { byQuote[r.quote] = []; qs.push(r.quote); }
+      byQuote[r.quote].push(r);
+    });
+    qs.sort(function (a, b) {
+      var ia = order.indexOf(a), ib = order.indexOf(b);
+      if (ia < 0) ia = order.length;
+      if (ib < 0) ib = order.length;
+      return (ia - ib) || cmpStr(a, b);
+    });
+    return qs.map(function (q) { return { quote: q, rows: byQuote[q] }; });
+  }
+
+  /**
+   * The best market to send someone to for an asset, or null if there is not
+   * one.
+   *
+   * NULL IS A REAL ANSWER and callers must handle it. An asset can be held,
+   * deposited and withdrawn while having no open market — that is the whole
+   * point of a settlement gate — so "where do I trade this" sometimes has no
+   * answer, and offering a button anyway lands on a 404 or on a book that
+   * refuses orders. Open markets only, most senior quote first, and the
+   * asset's own markets before the ones where it is somebody's quote.
+   */
+  function mktTradeLink(markets, asset, order) {
+    var mine = (markets || []).filter(function (m) {
+      return (m.base === asset || m.quote === asset) && mktState(m) === "open";
+    });
+    if (!mine.length) return null;
+    var rank = function (m) {
+      var i = (order || []).indexOf(m.quote);
+      return (i < 0 ? (order || []).length : i) + (m.base === asset ? 0 : 100);
+    };
+    mine.sort(function (a, b) { return (rank(a) - rank(b)) || cmpStr(a.symbol, b.symbol); });
+    return mine[0].symbol || (mine[0].base + "-" + mine[0].quote);
+  }
+
+  /** One change to the filter, in, one whole filter out. */
+  function mktApply(f, change) {
+    var next = {
+      text: f.text, assets: (f.assets || []).slice(), quoteOnly: f.quoteOnly,
+      open: f.open, sort: f.sort, cleared: false,
+    };
+    if (change.clear) {
+      next.text = ""; next.assets = []; next.quoteOnly = null; next.open = true;
+      return next;
+    }
+    if (change.text !== undefined) {
+      next.text = change.text;
+      /*
+       * TYPING CLEARS THE FACETS, AND THE COUNT LINE SAYS SO.
+       *
+       * The one real failure mode of a faceted filter is a search that comes
+       * back empty because a chip nobody remembers pressing is still pressed
+       * — at which point the search box looks broken and the chip is the
+       * thing to undo. Clearing silently would be its own trap, so the
+       * clearing is announced rather than hidden; see mktSummary.
+       */
+      if (String(change.text).trim() !== "" && (next.assets.length || next.quoteOnly)) {
+        next.assets = [];
+        next.quoteOnly = null;
+        next.cleared = true;
+      }
+    }
+    if (change.toggleAsset) {
+      var i = next.assets.indexOf(change.toggleAsset);
+      if (i >= 0) next.assets.splice(i, 1); else next.assets.push(change.toggleAsset);
+    }
+    if (change.assets !== undefined) next.assets = change.assets.slice();
+    if (change.quoteOnly !== undefined) next.quoteOnly = change.quoteOnly;
+    if (change.open !== undefined) next.open = !!change.open;
+    if (change.sort !== undefined) next.sort = change.sort;
+    return next;
+  }
+
+  /**
+   * The count line, which is also the screen reader's only notification that
+   * anything happened. It names the active facets, so "showing 3" is never a
+   * mystery, and it is the place the silent facet-clear above becomes audible.
+   */
+  function mktSummary(n, f) {
+    var bits = [n.open + " open"];
+    if (n.closed) bits.push(n.closed + " closed");
+    bits.push("showing " + n.shown);
+    if (f.quoteOnly) bits.push("quoted in " + f.quoteOnly);
+    // "Quoted in BTC · involving BTC" says the same thing twice: an asset
+    // named by the quote clause is dropped from the involves clause.
+    var inv = (f.assets || []).filter(function (a) { return a !== f.quoteOnly; });
+    if (inv.length) bits.push("involving " + inv.join(", "));
+    if (f.cleared) bits.push("filters cleared by search");
+    return bits.join(" · ");
+  }
+
+  /**
+   * Why the list is empty, naming the facet that did it.
+   *
+   * "No market matches that" was adequate for one text box. With four facets
+   * live it is a riddle, and the hidden-closed facet is the one people forget
+   * they are inside — so it is named even though they never touched it.
+   */
+  function mktEmptyWhy(f) {
+    var why = [];
+    if (String(f.text || "").trim()) why.push('nothing matches "' + String(f.text).trim() + '"');
+    if (f.quoteOnly) why.push("nothing here is quoted in " + f.quoteOnly);
+    if (f.assets.length) why.push("nothing here involves " + f.assets.join(" or "));
+    if (f.open) why.push("closed markets are hidden");
+    if (!why.length) return "This venue lists no markets yet.";
+    return why.join(", and ") + ".";
+  }
+
+  /**
+   * The refusals, split into the two kinds that need different wording.
+   *
+   * A pair blocked by an asset that cannot settle YET makes a different
+   * promise from a pair whose price cannot be expressed in the quote's
+   * decimals at all: the first opens when a rail opens, the second never
+   * will. One heading over both would make the permanent refusals look
+   * temporary, which is the more expensive of the two misreadings — somebody
+   * waits for a market that is never coming.
+   */
+  function mktRefusals(list) {
+    var never = [], byAsset = {}, order = [];
+    (list || []).forEach(function (r) {
+      if (!r || !r.base || !r.quote) return;
+      var pair = r.base + "/" + r.quote;
+      var why = r.why || r.reason || r.closedReason || "";
+      var by = r.blockedBy || r.pending || r.waitingOn;
+      if (!by) {
+        never.push({ pair: pair, base: r.base, quote: r.quote, why: why });
+        return;
+      }
+      if (!byAsset[by]) { byAsset[by] = { by: by, why: why, pairs: [] }; order.push(by); }
+      if (!byAsset[by].why && why) byAsset[by].why = why;
+      byAsset[by].pairs.push(pair);
+    });
+    never.sort(function (a, b) { return cmpStr(a.pair, b.pair); });
+    order.sort(cmpStr);
+    return { never: never, pending: order.map(function (k) { return byAsset[k]; }) };
+  }
+
+  /**
+   * The inline note under a narrowed list.
+   *
+   * Without this, "I asked for everything against BTC and got three rows"
+   * reads as a broken filter rather than as decimal arithmetic. It surfaces
+   * the same refusals the panel below holds, at the moment the short list
+   * makes them a question, so nobody has to go opening panels to find out
+   * whether the filter worked.
+   */
+  function mktRefusalNote(refusals, f) {
+    var want = (f.assets || []).slice();
+    if (f.quoteOnly && want.indexOf(f.quoteOnly) < 0) want.push(f.quoteOnly);
+    if (!want.length) return "";
+    var hit = refusals.never.filter(function (r) {
+      return f.quoteOnly
+        ? r.quote === f.quoteOnly
+        : want.indexOf(r.base) >= 0 || want.indexOf(r.quote) >= 0;
+    });
+    if (!hit.length) return "";
+    var whys = [];
+    hit.forEach(function (r) { if (r.why && whys.indexOf(r.why) < 0) whys.push(r.why); });
+    var label = hit.length + (hit.length === 1 ? " more pair" : " more pairs") +
+      " cannot be listed: " + hit.map(function (r) { return r.pair; }).join(", ");
+    /*
+     * ONE REASON INLINE; THE REST STAY IN THE PANEL.
+     *
+     * The refusals that share a cause are worded per pair by the venue, so
+     * concatenating them gives four near-identical sentences differing only
+     * in a coin name. That is a wall, and a wall is skipped — which would
+     * defeat the whole point of putting the explanation where the short list
+     * raises the question.
+     */
+    if (whys.length === 1) return label + " — " + whys[0];
+    if (whys.length > 1) return label + ". Each one's reason is in the list below.";
+    return label + ".";
+  }
+
+  // ===== MARKET FILTER — PURE BLOCK ENDS =====
 
   var RENDER = {};
 
+  /*
+   * THE FILTER IS REMEMBERED FOR THE TAB, NOT PUT IN THE URL.
+   *
+   * route() parses `#/markets` strictly, so hanging query parameters off the
+   * hash would make every screen's router care about this screen's facets.
+   * sessionStorage also expires it at the right time: reopening the app
+   * tomorrow to a list with three chips pressed reads as a broken market
+   * list, not as a remembered preference.
+   */
+  var MKT_STORE = "blockle.ex.mkt.filter";
+
+  function mktRestore() {
+    var f = mktFilterDefault();
+    try {
+      var raw = sessionStorage.getItem(MKT_STORE);
+      if (!raw) return f;
+      var s = JSON.parse(raw);
+      if (s && typeof s === "object") {
+        if (Array.isArray(s.assets)) {
+          f.assets = s.assets.filter(function (a) { return typeof a === "string"; });
+        }
+        if (typeof s.quoteOnly === "string") f.quoteOnly = s.quoteOnly;
+        if (typeof s.open === "boolean") f.open = s.open;
+        if (typeof s.sort === "string") f.sort = s.sort;
+        // THE TEXT IS NOT RESTORED. A search box that comes back with words in
+        // it, over a list that is consequently short, is the hardest state to
+        // recognise as a filter rather than an outage.
+      }
+    } catch (e) { /* storage denied (private mode): the default filter is fine */ }
+    return f;
+  }
+
+  function mktSave() {
+    try {
+      sessionStorage.setItem(MKT_STORE, JSON.stringify({
+        assets: MKT.assets, quoteOnly: MKT.quoteOnly, open: MKT.open, sort: MKT.sort,
+      }));
+    } catch (e) { /* storage denied */ }
+  }
+
+  var MKT = mktRestore();
+
+  /** mktTradeLink against the live market list. */
+  function tradeLinkFor(asset) {
+    return mktTradeLink(STATE.markets, asset, STATE.quotes);
+  }
+
+  function mktSet(change) {
+    MKT = mktApply(MKT, change);
+    mktSave();
+    drawMarkets();
+  }
+
+  /**
+   * The table's column count, read off the live header row.
+   *
+   * It used to be the literal 7, written out three times — in app.html's
+   * colspan and in two emptyRow calls — so dropping a column left the
+   * loading, empty and error rows spanning the wrong width. One of the three
+   * is now the source and the other two read it.
+   */
+  function mktCols() {
+    var head = $("t-markets").tHead;
+    return (head && head.rows[0] && head.rows[0].cells.length) || 1;
+  }
+
+  /*
+   * FOCUS HAS TO SURVIVE THE POLL, AND THAT IS THIS SCREEN'S PROBLEM ALONE.
+   *
+   * This screen re-renders on a timer — every 8 seconds, from route() — and
+   * the render rebuilds the chip rail and the entire tbody from scratch.
+   * Anything the keyboard was standing on is destroyed, so focus falls back
+   * to <body> and the next Tab starts again from the top of the document.
+   *
+   * THIS GOT WORSE BY BEING FIXED, which is why it needs saying. The old
+   * markets screen had nothing focusable in the table at all: the row was a
+   * <tr onclick> and the Trade affordance was a <span> styled as a button. It
+   * could not lose focus because it could never hold any. Turning those into
+   * real links is what makes the screen usable by keyboard, and it is also
+   * what created thirty-odd tab stops that a timer wipes mid-sentence. A
+   * keyboard user would reach row four, lose their place, and reasonably
+   * conclude the list was not navigable after all — so the two changes only
+   * work as a pair.
+   *
+   * The identity is a `data-focus` key rather than an index, because the row
+   * a user is standing on must come back even when the poll reorders the list
+   * or a market closes underneath them. If the key is gone, focus is NOT
+   * moved somewhere approximate: landing on a neighbouring market's Trade
+   * link is worse than landing nowhere, since the next keypress would act on
+   * the wrong market.
+   *
+   * Only one attribute carries this. The chips used to hold a second
+   * `data-asset` purely so the rail could restore itself, and two identity
+   * attributes on one element is how they come to disagree.
+   */
+  function mktFocusKey() {
+    var a = document.activeElement;
+    if (!a || !a.getAttribute) return null;
+    return a.getAttribute("data-focus") || null;
+  }
+
+  function mktKeepFocus(key) {
+    if (!key) return;
+    var back = $("s-markets").querySelector('[data-focus="' + key + '"]');
+    if (!back || !back.focus) return;
+    // preventScroll because the element is being put back where it already
+    // was: the user can see it, and a scroll correction arriving eight
+    // seconds into reading a row is its own interruption. Browsers that do
+    // not know the option ignore it and focus normally.
+    back.focus({ preventScroll: true });
+  }
+
+  /**
+   * One row per market, merging what the two public endpoints each know.
+   *
+   * /public/tickers carries the prices and /public/markets carries the
+   * definition; status and its reason may arrive on either, so both are read
+   * and whichever has an answer wins. The market list is also where `symbol`
+   * lives — this used to read `m.market`, a field /public/markets does not
+   * emit, and got away with it only because the symbol happens to be exactly
+   * base + "-" + quote.
+   */
+  function mktRows() {
+    var defs = {};
+    STATE.markets.forEach(function (m) { defs[m.symbol] = m; });
+    return STATE.tickers.map(function (t) {
+      var sym = t.market || (t.base + "-" + t.quote);
+      var d = defs[sym] || {};
+      return {
+        market: sym,
+        pair: t.pair || (t.base + "/" + t.quote),
+        base: t.base,
+        quote: t.quote,
+        last: t.last,
+        bid: t.bid,
+        ask: t.ask,
+        state: t.state || t.status || d.state || d.status,
+        closed: t.closed !== undefined ? t.closed : d.closed,
+        closedReason: t.closedReason || t.reason || t.why || d.closedReason || d.reason,
+      };
+    });
+  }
+
   RENDER.markets = function () {
     pub("tickers").then(function (rows) {
-      STATE.tickers = rows;
+      STATE.tickers = Array.isArray(rows) ? rows : [];
       drawMarkets();
     }).catch(function (e) {
-      emptyRow($("t-markets").tBodies[0], 7, "Markets unavailable: " + e.message);
+      emptyRow($("t-markets").tBodies[0], mktCols(), "Markets unavailable: " + e.message);
+      $("mkt-count").textContent = "market data unavailable";
     });
   };
 
   function drawMarkets() {
-    var q = ($("mkt-search").value || "").trim().toUpperCase();
+    var all = mktRows();
+    var cols = mktCols();
     var body = $("t-markets").tBodies[0];
-    var rows = STATE.tickers.filter(function (t) {
-      return !q || t.pair.indexOf(q) >= 0 || coinIcon.fullName(t.base).toUpperCase().indexOf(q) >= 0;
-    });
-    clear(body);
-    if (!rows.length) { emptyRow(body, 7, "No market matches that."); return; }
+    // Read before anything is torn down; handed back at every exit below.
+    var focused = mktFocusKey();
 
-    rows.forEach(function (t) {
-      var tr = body.insertRow();
-      tr.className = "click";
-      tr.onclick = function () { location.hash = "#/trade/" + t.market; };
-      assetCell(tr, t.base);
-      cell(tr, t.last, "num");
-      cell(tr, t.bid, "num up");
-      cell(tr, t.ask, "num down");
-      cell(tr, spreadOf(t.bid, t.ask), "num dim");
-      cell(tr, t.quote, "dim");
-      var td = document.createElement("td");
-      var a = el("span", "btn sm ghost", "Trade");
-      td.appendChild(a);
-      tr.appendChild(td);
+    // Status scope first. The chips describe the set they are about to filter.
+    var openRows = all.filter(function (r) { return mktState(r) === "open"; });
+    var scoped = MKT.open ? openRows : all;
+    var closedN = all.length - openRows.length;
+
+    var order = mktQuoteOrder(all, STATE.quotes);
+    drawChips(all, scoped, order);
+
+    var rows = mktSort(mktFilter(all, MKT), MKT.sort);
+
+    $("mkt-count").textContent =
+      mktSummary({ open: openRows.length, closed: closedN, shown: rows.length }, MKT);
+
+    var cn = $("mkt-closedn");
+    cn.textContent = closedN + " closed";
+    // The `hidden` CLASS, not the attribute: `.pill` sets display:inline-block
+    // and wins over the user-agent's [hidden] rule, so the attribute alone
+    // leaves the badge on screen.
+    cn.className = closedN ? "pill warn" : "pill warn hidden";
+    $("mkt-open").setAttribute("aria-pressed", MKT.open ? "true" : "false");
+    $("mkt-all").setAttribute("aria-pressed", MKT.open ? "false" : "true");
+    if ($("mkt-sort").value !== MKT.sort) $("mkt-sort").value = MKT.sort;
+    drawQuoteOnly();
+
+    var refusals = mktRefusals(STATE.notListed);
+    drawRefusals(refusals);
+    var note = mktRefusalNote(refusals, MKT);
+    $("mkt-note").textContent = note;
+    $("mkt-note").className = note ? "msg" : "msg hidden";
+
+    clear(body);
+    if (!rows.length) {
+      emptyRow(body, cols, mktEmptyWhy(MKT));
+      var td = body.rows[0].cells[0];
+      td.appendChild(document.createTextNode(" "));
+      var undo = el("button", "btn sm ghost", "Clear filters");
+      undo.type = "button";
+      undo.setAttribute("data-focus", "clear");
+      undo.onclick = function () {
+        $("mkt-search").value = "";
+        mktSet({ clear: true });
+      };
+      td.appendChild(undo);
+      mktKeepFocus(focused);
+      return;
+    }
+
+    /*
+     * GROUPED BY QUOTE, BUT ONLY WHEN THE ORDER IS ALPHABETICAL.
+     *
+     * Four labelled groups are readable where a flat 28 rows is not, and a
+     * flat 55 once ETH and SOL open definitely is not. But sorting by spread
+     * and then cutting the result into groups defeats the sort — the whole
+     * point of that order is comparing across quotes — so grouping and the
+     * other two orders are exclusive. No pagination either: re-rendering 55
+     * rows per keystroke costs nothing, and a market list you have to page
+     * through is a market list nobody scans.
+     */
+    if (MKT.sort === "pair") {
+      mktGroups(rows, order).forEach(function (g) {
+        groupRow(body, g, cols);
+        g.rows.forEach(function (r) { marketRow(body, r); });
+      });
+    } else {
+      rows.forEach(function (r) { marketRow(body, r); });
+    }
+
+    mktKeepFocus(focused);
+  }
+
+  /* Rebuilding the rail every poll would steal focus from a keyboard user
+   * part-way along the chips. It is drawMarkets that hands focus back, for
+   * this rail and the table together — see mktFocusKey. */
+  function drawChips(all, scoped, order) {
+    var rail = $("mkt-chips");
+    var counts = mktCounts(scoped).involves;
+    clear(rail);
+
+    var lead = el("div", "cluster");
+    lead.appendChild(chipNode("", "All", scoped.length,
+      !MKT.assets.length && !MKT.quoteOnly));
+    rail.appendChild(lead);
+
+    mktRail(all, order).forEach(function (c) {
+      var box = el("div", "cluster");
+      box.appendChild(el("span", "lbl", c.label));
+      c.assets.forEach(function (a) {
+        box.appendChild(chipNode(a, a, counts[a] || 0, MKT.assets.indexOf(a) >= 0));
+      });
+      rail.appendChild(box);
     });
+  }
+
+  /**
+   * One asset chip. A real <button> with aria-pressed, which is the control
+   * the stylesheet's segmented pattern already uses, so screen readers get a
+   * toggle rather than a link that does not navigate.
+   */
+  function chipNode(asset, label, count, on) {
+    var b = el("button", "chip" + (count ? "" : " none"));
+    b.type = "button";
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    // The identity the poll uses to hand focus back. "chip:" with nothing
+    // after it is the All chip, which is a real chip with an empty asset.
+    b.setAttribute("data-focus", "chip:" + asset);
+    if (asset) b.appendChild(coinMark(asset, 14));
+    b.appendChild(el("span", null, label));
+    b.appendChild(el("span", "c", String(count)));
+    // The count joins the accessible name, so the chip is announced as
+    // "BTC, 3 markets" rather than as two unrelated strings.
+    b.setAttribute("aria-label", label + ", " + count + (count === 1 ? " market" : " markets"));
+    b.onclick = asset
+      ? function () { mktSet({ toggleAsset: asset }); }
+      : function () { mktSet({ assets: [], quoteOnly: null }); };
+    return b;
+  }
+
+  /**
+   * The quoted-in facet, as a thing you can see and dismiss on its own.
+   *
+   * THIS EXISTS BECAUSE THE FACET OUTLIVES THE CONTROL THAT SETS IT.
+   *
+   * "Quoted in BTC" is set from a quote group's header, which is the right
+   * place for it — already beside the thing it describes, so both readings of
+   * a chip (involves, versus quoted in) are one click apart with no mode
+   * control to explain. But those headers only exist under Pair A-Z, because
+   * cutting a spread-sorted list into groups defeats the sort. So the facet
+   * set under the default order survived a change of sort into a state you
+   * could read in the count line and could NOT undo, short of also dropping
+   * your asset chips with the All chip. A filter you cannot see is a filter
+   * you cannot turn off, and a short list with no visible cause is the one
+   * failure mode a faceted filter has.
+   *
+   * It is deliberately NOT a toggle. `aria-pressed` is pinned true in the
+   * markup: the button only ever exists while the facet is on and its only
+   * action is to clear it, so announcing it as a two-state control would be
+   * describing an off state that is never reachable from here. The group
+   * header's own "All quotes" button is the symmetric control; this is the
+   * escape hatch that works in every order.
+   */
+  function drawQuoteOnly() {
+    var b = $("mkt-qonly");
+    var q = MKT.quoteOnly;
+    clear(b);
+    if (!q) {
+      // The `hidden` CLASS rather than the attribute: `.chip` sets
+      // display:inline-flex, which beats the user-agent's [hidden] rule and
+      // would leave a stale, empty token sitting in the bar.
+      b.className = "chip qonly hidden";
+      b.removeAttribute("aria-label");
+      b.onclick = null;
+      return;
+    }
+    b.className = "chip qonly";
+    b.appendChild(coinMark(q, 14));
+    b.appendChild(el("span", null, "Quoted in " + q));
+    // A multiplication sign, not an "x": this is a dismiss glyph and the
+    // letter reads as part of the ticker next to it. It is marked
+    // aria-hidden because the accessible name below already says "remove".
+    var x = el("span", "x", "×");
+    x.setAttribute("aria-hidden", "true");
+    b.appendChild(x);
+    b.setAttribute("aria-label", "Remove the quoted in " + q + " filter");
+    b.setAttribute("data-focus", "qonly");
+    b.onclick = function () { mktSet({ quoteOnly: null }); };
+  }
+
+  function groupRow(body, g, cols) {
+    var tr = body.insertRow();
+    tr.className = "grp";
+    var td = document.createElement("td");
+    td.colSpan = cols;
+    td.appendChild(el("span", "lbl",
+      g.quote + " · " + g.rows.length + (g.rows.length === 1 ? " market" : " markets")));
+
+    /*
+     * "ONLY" IS HOW "QUOTED IN X" IS REACHED.
+     *
+     * The chips mean INVOLVES, which is the reading people want most of the
+     * time and the only one that works for an asset that is mostly somebody
+     * else's quote. This is the other reading, and living on the group header
+     * means it is already next to the thing it describes — so both readings
+     * are one click apart with no extra mode control, and there is no
+     * quote-only facet showing misleading zeros.
+     */
+    var mine = MKT.quoteOnly === g.quote;
+    var only = el("button", "btn sm ghost", mine ? "All quotes" : "Only");
+    only.type = "button";
+    only.setAttribute("data-focus", "only:" + g.quote);
+    only.setAttribute("aria-label", mine
+      ? "Show markets in every quote again"
+      : "Show only markets quoted in " + g.quote);
+    only.onclick = function () { mktSet({ quoteOnly: mine ? null : g.quote }); };
+    td.appendChild(only);
+    tr.appendChild(td);
+  }
+
+  function marketRow(body, t) {
+    var open = mktState(t) === "open";
+    var tr = body.insertRow();
+    if (!open) tr.className = "off";
+
+    /*
+     * THE PAIR, NOT THE BASE.
+     *
+     * This cell used to render the base alone, which with six quotes gives up
+     * to six rows all reading "BTC", told apart only by a column five places
+     * to the right.
+     *
+     * It is also a REAL LINK now. It was a <tr onclick> with a <span> styled
+     * as a button, so the entire markets screen was unreachable by keyboard —
+     * a span takes no focus and this origin's CSP (script-src 'self', no
+     * unsafe-inline) blocks an onclick attribute outright. A hash href needs
+     * neither script nor an exception. Closed rows get no link at all: the
+     * thing you cannot do should not look clickable.
+     */
+    var td = document.createElement("td");
+    var inner = open ? el("a", "pair") : el("div", "pair");
+    if (open) {
+      inner.href = "#/trade/" + t.market;
+      inner.setAttribute("data-focus", "pair:" + t.market);
+    }
+    var wrap = el("div", "pairc");
+    var marks = el("div", "marks");
+    marks.appendChild(coinMark(t.base, 22));
+    marks.appendChild(coinMark(t.quote, 22));
+    wrap.appendChild(marks);
+    var txt = el("div");
+    txt.appendChild(el("div", "tk", t.base + "/" + t.quote));
+    txt.appendChild(el("div", "nm", coinIcon.fullName(t.base)));
+    wrap.appendChild(txt);
+    inner.appendChild(wrap);
+    td.appendChild(inner);
+    tr.appendChild(td);
+
+    cell(tr, t.last, "num");
+    cell(tr, t.bid, "num up");
+    cell(tr, t.ask, "num down");
+    var sp = spreadPct(t);
+    cell(tr, sp === null ? null : sp.toFixed(3) + "%", "num dim");
+
+    // The old "Quote" column is gone: the quote is in the pair cell, and this
+    // space buys the one fact a growing market list most needs to carry.
+    var std = document.createElement("td");
+    std.appendChild(el("span", "pill " + (open ? "ok" : "warn"), open ? "Open" : "Closed"));
+    if (!open) std.appendChild(el("div", "why", mktReason(t)));
+    tr.appendChild(std);
+
+    var atd = document.createElement("td");
+    if (open) {
+      var a = el("a", "btn sm ghost", "Trade");
+      a.href = "#/trade/" + t.market;
+      a.setAttribute("data-focus", "trade:" + t.market);
+      atd.appendChild(a);
+    } else {
+      // Cancelling is never gated, by design, so say which half still works
+      // rather than leaving the cell blank and the question open.
+      atd.appendChild(el("span", "lbl", "Cancels only"));
+    }
+    tr.appendChild(atd);
+  }
+
+  function drawRefusals(r) {
+    var nb = $("t-never").tBodies[0];
+    clear(nb);
+    r.never.forEach(function (x) {
+      var tr = nb.insertRow();
+      cell(tr, x.pair);
+      cell(tr, x.why, "wrap");
+    });
+    $("mkt-never").className = r.never.length ? "panel" : "panel hidden";
+    $("mkt-never-n").textContent = r.never.length
+      ? r.never.length + (r.never.length === 1 ? " pair" : " pairs") : "";
+
+    var pb = $("t-pending").tBodies[0];
+    clear(pb);
+    var n = 0;
+    r.pending.forEach(function (g) {
+      n += g.pairs.length;
+      var tr = pb.insertRow();
+      cell(tr, g.by);
+      cell(tr, g.pairs.join(", "), "wrap");
+      cell(tr, g.why, "wrap");
+    });
+    $("mkt-pending").className = n ? "panel" : "panel hidden";
+    $("mkt-pending-n").textContent = n ? n + (n === 1 ? " pair" : " pairs") : "";
   }
 
   // --------------------------------------------------------------------- trade
@@ -606,11 +1461,26 @@
         cell(tr, b.reserved === "0" ? DASH : b.reserved, "num dim");
         cell(tr, b.available, "num");
         var td = document.createElement("td");
-        var a = document.createElement("a");
-        a.className = "btn sm ghost";
-        a.href = "#/trade/" + b.asset + "-USDT";
-        a.appendChild(tx("Trade"));
-        if (b.asset !== "USDT") td.appendChild(a);
+        /*
+         * THE LINK IS RESOLVED, NOT BUILT.
+         *
+         * This used to assemble `b.asset + "-USDT"` and suppress it only for
+         * USDT itself. That is a guess about the symbol — it is wrong for any
+         * asset whose USDT market is the other way round (USDC-USDT is the
+         * live one, not USDT-USDC), wrong for an asset with no USDT market at
+         * all, and wrong for every market the venue has closed. All three
+         * produce a button that leads to a 404 or a book nobody can trade on.
+         * Resolving it against the market list instead means the button
+         * exists when, and only when, there is somewhere for it to go.
+         */
+        var dest = tradeLinkFor(b.asset);
+        if (dest) {
+          var a = document.createElement("a");
+          a.className = "btn sm ghost";
+          a.href = "#/trade/" + dest;
+          a.appendChild(tx("Trade"));
+          td.appendChild(a);
+        }
         tr.appendChild(td);
       });
     });
@@ -1669,7 +2539,13 @@
   // ---------------------------------------------------------------------- boot
 
   function wire() {
-    $("mkt-search").oninput = drawMarkets;
+    // Handlers are assigned here rather than in the markup because this origin
+    // serves script-src 'self' with no 'unsafe-inline': an onclick attribute
+    // would be silently dead.
+    $("mkt-search").oninput = function () { mktSet({ text: $("mkt-search").value }); };
+    $("mkt-open").onclick = function () { mktSet({ open: true }); };
+    $("mkt-all").onclick = function () { mktSet({ open: false }); };
+    $("mkt-sort").onchange = function () { mktSet({ sort: $("mkt-sort").value }); };
     $("side-buy").onclick = function () { setSide("buy"); };
     $("side-sell").onclick = function () { setSide("sell"); };
     $("t-price").oninput = function () { ticketTotals(marketDef()); };
@@ -1781,21 +2657,67 @@
       $("t-feepct").textContent = f.takerPct;
     }).catch(function () {});
 
-    pub("markets").then(function (rows) {
+    pub("markets").then(function (payload) {
+      /*
+       * TWO SHAPES, ONE READER.
+       *
+       * /public/markets answers with a bare array today. A settlement-gated
+       * venue has a second thing to say — the pairs it will NOT list, and why
+       * — which does not fit in an array of markets, so the endpoint may
+       * answer with an object instead. Accepting both means the page works
+       * before and after that change, in either order, with no flag day.
+       */
+      var rows = Array.isArray(payload) ? payload : ((payload && payload.markets) || []);
+      STATE.notListed = (payload && Array.isArray(payload.notListed)) ? payload.notListed : [];
+
       STATE.markets = rows.map(function (m) {
-        return { symbol: m.market || (m.base + "-" + m.quote), base: m.base, quote: m.quote };
+        return {
+          // `symbol` is the field this endpoint actually emits. The previous
+          // version read `m.market` — which belongs to /public/tickers — and
+          // got away with it only because the fallback happens to reproduce
+          // the symbol exactly. It would stop being true the day a symbol is
+          // not base + "-" + quote.
+          symbol: m.symbol || m.market || (m.base + "-" + m.quote),
+          base: m.base,
+          quote: m.quote,
+          // Already on the wire and previously thrown away. Decimals and the
+          // minimum order size are what a correctly formatted price needs.
+          baseDecimals: m.baseDecimals,
+          quoteDecimals: m.quoteDecimals,
+          minBase: m.minBase,
+          state: m.state || m.status,
+          closed: m.closed,
+          closedReason: m.closedReason || m.reason,
+        };
       });
+
+      /*
+       * THE QUOTE ORDER COMES FROM THE VENUE, NOT FROM HERE.
+       *
+       * This used to be `a === "USDT" || a === "BLOCK"` — a fifth independent
+       * copy of the venue's quote list, after venue.ts, listed.ts,
+       * publicapi.ts and the gas-rate floor table. An asset is a quote
+       * because some market quotes in it, and the order is the order the
+       * venue emitted, which is its own seniority. Nothing to keep in step.
+       */
+      STATE.quotes = [];
+      STATE.markets.forEach(function (m) {
+        if (STATE.quotes.indexOf(m.quote) < 0) STATE.quotes.push(m.quote);
+      });
+
+      // Quote assets first in every asset picker, then the rest alphabetically
+      // — the pickers are for deposit and withdraw, where the quotes are what
+      // most people arrive holding.
       var seen = {};
-      var quotes = [];
       var rest = [];
       STATE.markets.forEach(function (m) {
         [m.base, m.quote].forEach(function (a) {
           if (seen[a]) return;
           seen[a] = true;
-          (a === "USDT" || a === "BLOCK" ? quotes : rest).push(a);
+          if (STATE.quotes.indexOf(a) < 0) rest.push(a);
         });
       });
-      STATE.assets = quotes.concat(rest.sort());
+      STATE.assets = STATE.quotes.concat(rest.sort());
       route();
     }).catch(function (e) {
       alert("Could not load markets: " + e.message);

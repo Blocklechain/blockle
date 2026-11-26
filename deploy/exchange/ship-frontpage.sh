@@ -101,4 +101,67 @@ for f in app.html exchange.js exchange.css coins.js signin.html; do
 		exit 3
 	fi
 done
+
+# --- THE CONSOLE IS SERVED AT A MOUNT, SO VERIFY IT AT THE MOUNT ------------
+#
+# WHY THIS BLOCK EXISTS. The loop above checks files at the static root, and
+# every one of them passed on 2026-11-25 while the operator console was dead.
+# admin.html is served at /admin/ but deployed FLAT, so the browser resolved
+# its relative <script src="admin.inline.js"> to /admin/admin.inline.js — a
+# path the resolver did not map — and got `{"error":"not found"}`. The document
+# was 200, the API was healthy, and the console sat on "checking session…"
+# indefinitely. Nothing in this script looked at /admin/ at all, so the deploy
+# reported success.
+#
+# So: fetch the console the way a BROWSER does — the document, then every
+# relative asset the document references, resolved against the mount. A 200 on
+# the page is not evidence the page works.
+echo "==> verifying the operator console at its mount"
+MOUNT="https://exchange.blockle.org/admin/"
+
+doc="$(curl -fsS "$MOUNT")" || {
+	echo "the console document itself did not load from $MOUNT" >&2
+	exit 4
+}
+
+# Relative src=/href= only; absolute and cross-origin URLs are not ours to
+# check. `grep -o` over the attribute, then strip the attribute name and quotes.
+assets="$(printf '%s' "$doc" \
+	| grep -oE '(src|href)="[^"]+"' \
+	| sed -E 's/^(src|href)="//; s/"$//' \
+	| grep -vE '^([a-z]+:|//|/|#)' \
+	| sort -u)"
+
+if [[ -z "$assets" ]]; then
+	echo "admin.html referenced no relative assets, which cannot be right —" >&2
+	echo "it has at least a script. Refusing to call this verified." >&2
+	exit 4
+fi
+
+console_ok=1
+while IFS= read -r asset; do
+	[[ -n "$asset" ]] || continue
+	code=$(curl -s -o /dev/null -w '%{http_code}' "${MOUNT}${asset}")
+	ctype=$(curl -s -o /dev/null -w '%{content_type}' "${MOUNT}${asset}")
+	if [[ "$code" != "200" ]]; then
+		printf '    %-22s HTTP %s  <-- the console will not boot\n' "$asset" "$code"
+		console_ok=0
+		continue
+	fi
+	# A 200 that is JSON where JavaScript was expected is the shape the outage
+	# actually took: the service answered, just not with the file.
+	if [[ "$asset" == *.js && "$ctype" != *javascript* ]]; then
+		printf '    %-22s 200 but Content-Type: %s  <-- not a script\n' "$asset" "$ctype"
+		console_ok=0
+		continue
+	fi
+	printf '    %-22s %s %s\n' "$asset" "$code" "$ctype"
+done <<<"$assets"
+
+if [[ "$console_ok" != 1 ]]; then
+	echo "The operator console is served but cannot run. An admin console that" >&2
+	echo "loads and does nothing is worse than one that 404s: it looks fine." >&2
+	exit 4
+fi
+
 echo "==> live"

@@ -45,6 +45,9 @@
 // algorithm at all. See seogen.ts.
 // -----------------------------------------------------------------------------
 
+import { QUOTE_SENIORITY } from "./settlement";
+import { OPEN_MARKETS } from "./venue";
+
 export class ListingError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -125,12 +128,23 @@ export interface ListedCoin {
 }
 
 /**
- * Markets a listed coin trades in, once live.
+ * THE QUOTES A LISTED COIN WILL TRADE AGAINST — DERIVED, NOT DECLARED.
  *
- * Both, always: USDT for the price everyone quotes in, BLOCK because this is
- * the venue where BLOCK is the other half of everything.
+ * This was a second `["USDT", "BLOCK"]` literal, independent of the venue's
+ * own. Two files had to be edited together and nothing said so, which is the
+ * same disconnect this file's header is about: the registry and the ledger
+ * drifted until a coin was promotable while the ledger refused every posting
+ * for it. A quote list kept here would drift the same way, and the symptom
+ * would be a published page linking to a market `market()` answers 404 for.
+ *
+ * So it is read off the venue: the quote of every market that is actually
+ * open, most senior first. A quote whose rails cannot settle does not appear,
+ * which is why this is shorter than QUOTE_SENIORITY.
  */
-export const QUOTES: readonly string[] = ["USDT", "BLOCK"];
+export const QUOTES: readonly string[] = (() => {
+	const seen = new Set(OPEN_MARKETS.map((m) => m.quote));
+	return QUOTE_SENIORITY.filter((q) => seen.has(q));
+})();
 
 /* -------------------------------------------------------------------------- */
 
@@ -400,10 +414,34 @@ export function coinBySymbol(symbol: string): ListedCoin | undefined {
 	return LISTED.find((c) => c.symbol === s);
 }
 
-/** Markets this coin trades in. Empty unless it is live. */
+/**
+ * THE REAL SYMBOLS THIS COIN TRADES IN. Empty unless it is live.
+ *
+ * READ OFF THE VENUE RATHER THAN REBUILT. The previous version composed
+ * `${coin.symbol}-${q}`, which assumes the coin is always the BASE — true while
+ * the only quotes were USDT and BLOCK and no registry coin was a quote, and
+ * false the moment it is not. Composed symbols would have published
+ * `BLOCK-USDC` as a link, when the live symbol is `USDC-BLOCK`, and seogen.ts
+ * turns these straight into hrefs: a 404 on a page whose whole purpose is to be
+ * the place a miner lands.
+ *
+ * CLOSED MARKETS ARE EXCLUDED. A coin page saying "sell into this pair" above a
+ * market that refuses orders is the lie this file's status field exists to
+ * prevent.
+ */
 export function marketsFor(coin: ListedCoin): readonly string[] {
 	if (coin.status !== "live") return [];
-	return QUOTES.filter((q) => q !== coin.symbol).map((q) => `${coin.symbol}-${q}`);
+	return OPEN_MARKETS.filter(
+		(m) => m.base === coin.symbol || m.quote === coin.symbol,
+	)
+		.slice()
+		.sort(
+			(a, b) =>
+				QUOTE_SENIORITY.indexOf(a.quote as (typeof QUOTE_SENIORITY)[number]) -
+					QUOTE_SENIORITY.indexOf(b.quote as (typeof QUOTE_SENIORITY)[number]) ||
+				a.symbol.localeCompare(b.symbol),
+		)
+		.map((m) => m.symbol);
 }
 
 /**

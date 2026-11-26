@@ -145,6 +145,30 @@ export function quote(args: {
 	let baseNeeded = 0n;
 	let quoteNeeded = 0n;
 
+	/*
+	 * A RUNG HAS TO CLEAR BOTH FLOORS, NOT JUST THE BASE ONE.
+	 *
+	 * `placeOrder` checks `minBase` AND `minNotional` — the quote-side floor —
+	 * and this function existed to show the ladder the venue would actually
+	 * accept. It checked only `minBase`, which agreed with the venue for as
+	 * long as USDT was the only quote worth thinking about and diverged the
+	 * moment the quote set grew: a 100 DOGE rung clears DINGO-free USDT's
+	 * 5 USDT floor and is worth half of BTC's 20,000-satoshi one. The preview
+	 * then showed five rungs and a capital requirement, and `open()` threw from
+	 * venue.ts on the first `place()` and rolled the whole ladder back — a
+	 * preview that lied about the one thing it is for.
+	 *
+	 * Checked with `quoteFor`, the same function the venue charges with, rather
+	 * than with `perRungQuote`: on a bid the two differ by the truncation in
+	 * the base-size division above, and it is the truncated figure the venue
+	 * sees.
+	 */
+	const fits = (price: bigint, base: bigint): bigint | undefined => {
+		if (base < m.minBase) return undefined;
+		const q = quoteFor(base, price, baseDec, m.priceDecimals);
+		return q < m.minNotional ? undefined : q;
+	};
+
 	for (let i = 1; i <= args.rungs; i++) {
 		const offBps = Math.round((half * i) / args.rungs);
 		const delta = (args.mid * BigInt(offBps)) / 10_000n;
@@ -152,23 +176,35 @@ export function quote(args: {
 		if (perRungQuote > 0n) {
 			const price = args.mid - delta;
 			if (price > 0n) {
-				const base = (perRungQuote * 10n ** BigInt(baseDec)) / price;
-				if (base >= m.minBase) {
+				// The inverse of quoteFor, so it has to carry the same scale.
+				// Without m.priceDecimals a ladder on a market that uses them
+				// would size every rung 10^p too large and the quote it
+				// previews would not be the quote the venue charges.
+				const base =
+					(perRungQuote * 10n ** BigInt(baseDec + m.priceDecimals)) / price;
+				const q = fits(price, base);
+				if (q !== undefined) {
 					bids.push({ price, base });
-					quoteNeeded += quoteFor(base, price, baseDec);
+					quoteNeeded += q;
 				}
 			}
 		}
-		if (perRungBase >= m.minBase) {
-			asks.push({ price: args.mid + delta, base: perRungBase });
+		const askPrice = args.mid + delta;
+		if (fits(askPrice, perRungBase) !== undefined) {
+			asks.push({ price: askPrice, base: perRungBase });
 			baseNeeded += perRungBase;
 		}
 	}
 
 	if (bids.length === 0 && asks.length === 0) {
+		// BOTH FLOORS ARE NAMED, because on a non-USDT quote the one that
+		// actually refused is usually the notional, and "below the 1 DOGE
+		// minimum" sends the reader to look at a number that was fine.
 		throw new MmError(
-			`every rung came out below the ${m.minBase} ${m.base} minimum — ` +
-				"commit more capital or use fewer rungs",
+			`every rung came out below this market's minimums — an order must be ` +
+				`at least ${m.minBase} base units of ${m.base} AND worth at least ` +
+				`${m.minNotional} base units of ${m.quote}. Commit more capital or ` +
+				"use fewer rungs.",
 		);
 	}
 

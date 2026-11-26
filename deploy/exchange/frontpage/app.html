@@ -4,7 +4,7 @@
 
   A dedicated screen per job, reachable by URL, behind a persistent rail:
 
-    #/markets    every pair, searchable, grouped by quote
+    #/markets    every pair: faceted by asset, by quote and by open/closed
     #/trade/X-Y  depth ladder, chart, order ticket, your orders, the tape
     #/balances   total / reserved / available per asset
     #/deposit    per asset and chain, plus the testnet faucet
@@ -81,32 +81,141 @@
 
   <main class="work" id="work">
     <!-- ------------------------------------------------------------ markets -->
+    <!--
+      THE FILTER IS THE SCREEN.
+      ======================================================================
+
+      This list used to be one substring box over ~25 rows, and at 25 rows a
+      substring box is enough. It is not enough once every asset trades
+      against every quote the venue can settle, because two different
+      questions stop having the same answer:
+
+        "show me everything QUOTED IN BTC"      — BTC on the right of the slash
+        "show me everything INVOLVING BTC"      — either side
+
+      Those are not the same set and no single text match distinguishes them.
+      A quote asset is mostly a QUOTE, so it appears on the left of the slash
+      in only a handful of its own markets — filtering on the text "BTC" mixes
+      both readings together and filtering on `m.quote` alone shows a
+      misleading zero for assets that are mostly bases. So the asset chips
+      below mean INVOLVES, and each quote's group header carries an "only"
+      button that narrows it to QUOTED IN. Both readings, one click apart, and
+      no extra mode control to explain.
+
+      THE SECOND JOB IS EXPLAINING ABSENCE. A settlement-gated venue refuses
+      pairs — some forever (no price can be expressed in that quote's
+      decimals) and some until a rail opens. A refusal nobody can read is
+      indistinguishable from a bug report, so closed markets stay VISIBLE with
+      their reason, and the pairs that have no market at all are listed under
+      the table rather than silently missing.
+
+      WHAT IS DELIBERATELY NOT OFFERED: sort or filter by 24h volume or 24h
+      change. /public/tickers hardcodes both to null, so those controls would
+      sort by nothing — a UI lying in a new place to look busier.
+    -->
     <section class="screen" id="s-markets">
       <div class="head">
         <div>
           <h1>Markets</h1>
           <p>
-            Every listed asset trades against USDT and against BLOCK. A price of
-            — means the pair has not traded yet; it does not mean zero.
+            Every asset trades against every quote we can actually settle. A
+            price of — means the pair has not traded yet; it does not mean
+            zero.
           </p>
         </div>
         <div class="right">
-          <input id="mkt-search" class="filter" placeholder="Filter…" aria-label="Filter markets" />
+          <input id="mkt-search" class="filter" placeholder="Filter by coin or pair…"
+                 aria-label="Filter markets" autocomplete="off" />
         </div>
       </div>
+
+      <!-- The facets. Built by exchange.js from the market list itself, so the
+           chips cannot name an asset the venue does not trade and the quote
+           order is the venue's own rather than a copy of it kept here. -->
+      <div class="mktbar">
+        <div class="chiprail scrollx" id="mkt-chips" role="group"
+             aria-label="Filter by asset"></div>
+        <div class="end">
+          <!--
+            THE QUOTED-IN FACET, WHEREVER YOU SET IT FROM.
+
+            "Quoted in BTC" is set from a quote group's own header, which is
+            where it belongs: it is already next to the thing it describes, so
+            both readings of a chip — involves, versus quoted in — are one click
+            apart with no mode control to explain.
+
+            But those headers only exist under Pair A–Z, because cutting a
+            spread-sorted list into groups defeats the sort. So a facet set
+            under the default order became, after a change of sort, a state you
+            could read in the count line and could not undo without also
+            dropping your asset chips. This is that state, as a thing you can
+            see and dismiss on its own, in every order. Empty and hidden until
+            the facet is on.
+          -->
+          <button type="button" id="mkt-qonly" class="chip qonly hidden"
+                  aria-pressed="true"></button>
+          <div class="seg" id="mkt-state" role="group" aria-label="Market status">
+            <button type="button" id="mkt-open" aria-pressed="true">Open</button>
+            <button type="button" id="mkt-all" aria-pressed="false">All</button>
+          </div>
+          <span class="pill warn hidden" id="mkt-closedn"></span>
+          <label class="mktsort">
+            <span class="lbl">Sort</span>
+            <select id="mkt-sort" aria-label="Sort markets">
+              <option value="pair">Pair A–Z</option>
+              <option value="spread">Spread — tightest first</option>
+              <option value="traded">Traded first</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <!-- The result count, announced. Nothing told a screen reader how many
+           rows a filter left behind, and sighted users were counting too. -->
+      <p class="mktcount" id="mkt-count" role="status" aria-live="polite">Loading markets…</p>
+
       <div class="panel">
         <div class="body tight scroll">
           <table id="t-markets">
             <thead>
               <tr>
                 <th>Market</th><th class="num">Last</th><th class="num">Bid</th>
-                <th class="num">Ask</th><th class="num">Spread</th><th>Quote</th><th></th>
+                <th class="num">Ask</th><th class="num">Spread</th><th>Status</th><th></th>
               </tr>
             </thead>
+            <!-- colspan matches the header row above. Every other place that
+                 needs this number reads it off the live <thead> instead of
+                 repeating it, so a column change cannot desynchronise them. -->
             <tbody><tr><td colspan="7" class="empty">Loading markets…</td></tr></tbody>
           </table>
         </div>
       </div>
+
+      <!-- Why a pair you expected is not above. Shown only when the venue
+           actually publishes refusals: an empty "nothing is refused" panel
+           would be noise, and a hand-written list here would be a second
+           source of truth for the market table. -->
+      <p class="msg hidden" id="mkt-note"></p>
+
+      <details class="panel hidden" id="mkt-never">
+        <summary>Pairs we will not list<span class="note" id="mkt-never-n"></span></summary>
+        <div class="body tight scroll">
+          <table id="t-never">
+            <thead><tr><th>Pair</th><th>Why not</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="panel hidden" id="mkt-pending">
+        <summary>Pairs waiting on settlement<span class="note" id="mkt-pending-n"></span></summary>
+        <div class="body tight scroll">
+          <table id="t-pending">
+            <thead><tr><th>Blocked by</th><th>Pairs</th><th>Why</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
     </section>
 
     <!-- -------------------------------------------------------------- trade -->
@@ -473,9 +582,17 @@
               asset against someone else's hosted RPC, because then their outage
               is our customers' frozen balance.
             </p>
+            <!-- This said "every asset trades against USDT and BLOCK", which
+                 was the same claim the markets lede used to make and is false
+                 for the same two reasons: the quote set is larger than two, and
+                 a pair only exists if both of its assets can actually settle.
+                 Promising a specific pair list on a listing form is promising
+                 something the settlement gate decides, so it no longer does. -->
             <p class="note" style="margin-top:10px">
-              Every asset trades against USDT and BLOCK. A pair with no
-              liquidity helps nobody, so tell us who intends to quote it.
+              Your coin is quoted against whichever of our quote assets can
+              settle it — the markets screen shows the live set, and the pairs we
+              refuse with the reason why. A pair with no liquidity helps nobody,
+              so tell us who intends to quote it.
             </p>
           </div>
         </div>

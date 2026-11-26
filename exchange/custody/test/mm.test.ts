@@ -179,8 +179,20 @@ test("nonsense parameters are refused rather than normalised", () => {
 test("capital too small for the market minimum is refused, with the reason", () => {
 	// Silently placing nothing and reporting success would leave someone
 	// believing they were quoting a market when they were not.
-	assert.throws(
-		() =>
+	//
+	// ASSERT THE SUBSTANCE, NOT THE SENTENCE. This used to match
+	// /below the .* minimum/, which broke when MIN_NOTIONAL added a SECOND
+	// minimum and the message became "...below this market's minimums" —
+	// plural. The behaviour was unchanged and the new wording is strictly
+	// better, since it names both bounds and what to do about it. Pinning the
+	// phrasing made a message improvement look like a regression.
+	//
+	// What actually has to hold: it throws, and the reason tells the operator
+	// which bounds were missed. There are now two, so both are required —
+	// naming only one would send someone to add capital against the wrong
+	// constraint.
+	const err = (() => {
+		try {
 			quote({
 				market: "BTC-USDT",
 				mid: MID,
@@ -188,9 +200,17 @@ test("capital too small for the market minimum is refused, with the reason", () 
 				rungs: 20,
 				baseCapital: 1n,
 				quoteCapital: 1n,
-			}),
-		/below the .* minimum/,
-	);
+			});
+		} catch (e) {
+			return e as Error;
+		}
+		return undefined;
+	})();
+
+	assert.ok(err !== undefined, "quoting below both minimums must refuse, not place nothing");
+	assert.match(err.message, /minimum/i, "the reason must name the constraint");
+	assert.match(err.message, /\bBTC\b/, "and the base minimum that was missed");
+	assert.match(err.message, /\bUSDT\b/, "and the notional minimum that was missed");
 });
 
 test("A LOSING LADDER IS REFUSED unless the loss is accepted explicitly", () => {
