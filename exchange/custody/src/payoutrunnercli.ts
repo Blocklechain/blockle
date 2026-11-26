@@ -161,6 +161,17 @@ async function main(): Promise<void> {
 	const nodeRails = new Map<string, NodePayoutRail>();
 	for (const [symbol, adapter] of nodeAdapters({
 		env: process.env,
+		/*
+		 * THE ONLY PROCESS IN THE SERVICE THAT ASKS TO BE ABLE TO SEND.
+		 *
+		 * `CHAIN_<SYM>_SEND=1` is necessary and no longer sufficient: the
+		 * environment grants the permission, this line requests it, and the
+		 * adapter needs both. Paying withdrawals out is this job's entire
+		 * purpose, so this is where the request belongs — and its absence
+		 * everywhere else is what keeps a send-capable hot-wallet adapter out
+		 * of the process that answers HTTP.
+		 */
+		canSend: true,
 		onSkip: (sym, why) => console.log(`  ${sym}: no payout rail (${why})`),
 	})) {
 		if (!(adapter instanceof BitcoinRpcAdapter)) {

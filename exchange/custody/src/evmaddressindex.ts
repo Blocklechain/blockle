@@ -164,15 +164,35 @@ export class EvmAddressIndex {
 	}
 
 	/**
-	 * PROVE THE XPUB BEFORE ANY ADDRESS IS ISSUED FROM IT.
+	 * CHECK THE XPUB AGAINST THE SIGNER'S OWN DERIVATION BEFORE ANY ADDRESS IS
+	 * ISSUED FROM IT.
 	 *
 	 * The signer host ships, alongside the xpub, a short list of addresses it
 	 * derived from the SEED. This re-derives the same indices from the xpub and
-	 * refuses on any mismatch. It is the only check that can tell "this is the
-	 * xpub of the seed the signer holds" from "this is a valid xpub of some
-	 * other seed" — both parse, both derive beautiful checksummed addresses, and
-	 * only one of them is sweepable. Everything else in this rail is downstream
-	 * of that distinction.
+	 * refuses on any mismatch.
+	 *
+	 * WHAT IT PROVES, EXACTLY, AND WHAT IT DOES NOT — BECAUSE THIS COMMENT USED
+	 * TO CLAIM MORE THAN THE CODE DOES.
+	 *
+	 * It said this was "the only check that can tell 'this is the xpub of the
+	 * seed the signer holds' from 'this is a valid xpub of some other seed'".
+	 * IT CANNOT, and selling a consistency check as a provenance proof is worse
+	 * than having neither, because it is the sentence the next operator will
+	 * trust. The vectors are derived FROM THE CONFIGURED XPUB here and compared,
+	 * so any xpub paired with vectors generated from THAT SAME xpub passes. An
+	 * operator who exports both from the wrong host, or from a staging
+	 * mnemonic, satisfies this check completely. What it does catch is a
+	 * hand-edited or stale vector file, a truncated or transposed xpub, and a
+	 * vector list belonging to a different account path — all real, none of them
+	 * provenance.
+	 *
+	 * WHAT WOULD ACTUALLY PROVE IT (a design change, not a stricter comparison):
+	 * the signer SIGNS a challenge with the private key at
+	 * `m/44'/60'/0'/0/<index>` and ships the signature; this host verifies it
+	 * against the public key it derived itself. A valid signature is only
+	 * producible by the holder of that seed, which is the claim. Until that
+	 * exists, `xpub-proven` in EVM_RAIL_REQUIREMENTS is a consistency
+	 * requirement, and the rail stays shut on the requirements it cannot meet.
 	 *
 	 * Deliberately NOT optional and deliberately NOT a warning. A warning in a
 	 * log is how 1000 loaded BLOCK addresses sat unused while customers were

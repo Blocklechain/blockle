@@ -209,13 +209,15 @@ test("every issued row records WHICH xpub derived it", () => {
 
 /* ------------------------------------------------- the signer's vector file */
 
-test("VECTORS PROVE THE XPUB BELONGS TO THE SIGNER'S SEED, and are mandatory", () => {
+test("VECTORS ARE MANDATORY, and catch a stale or edited vector file", () => {
 	/*
 	 * A valid xpub of the WRONG seed parses perfectly, derives beautiful
-	 * checksummed addresses, and is completely unsweepable. No amount of
-	 * validation on the xpub itself can tell the two apart — the only thing that
-	 * can is a list of addresses the signer derived from the SEED, compared
-	 * against the same indices derived from the xpub.
+	 * checksummed addresses, and is completely unsweepable. A list of addresses
+	 * the signer derived, compared against the same indices derived from the
+	 * xpub, catches the cases where the two artefacts DISAGREE.
+	 *
+	 * It does NOT catch the case where they agree and are both wrong — see the
+	 * test below, which pins that limitation on purpose.
 	 *
 	 * Mandatory rather than optional, and a throw rather than a warning,
 	 * because a warning in a log is how a thousand loaded BLOCK addresses sat
@@ -235,6 +237,41 @@ test("VECTORS PROVE THE XPUB BELONGS TO THE SIGNER'S SEED, and are mandatory", (
 	// Lowercase is the same address — a signer may not checksum its output.
 	assert.doesNotThrow(() =>
 		ix.assertVectors(good.map((v) => ({ ...v, address: v.address.toLowerCase() }))),
+	);
+});
+
+test("assertVectors IS A CONSISTENCY CHECK, NOT A PROVENANCE PROOF — pinned deliberately", () => {
+	/*
+	 * THIS TEST EXISTS TO STOP THE OVERCLAIM COMING BACK. The comment on
+	 * assertVectors used to say it was "the only check that can tell 'this is
+	 * the xpub of the seed the signer holds' from 'this is a valid xpub of some
+	 * other seed'". It cannot, and the demonstration is three lines: take the
+	 * WRONG account entirely, generate its vectors FROM ITSELF — which is what
+	 * an export script on the wrong host, or against a staging mnemonic, would
+	 * produce — and the check passes completely.
+	 *
+	 * Every address issued afterwards is a real, beautifully checksummed
+	 * Ethereum address that no key the venue holds can spend, with no symptom
+	 * until the first sweep.
+	 *
+	 * WHAT WOULD CLOSE IT: the signer signs a challenge with the private key at
+	 * the claimed index and this host verifies that signature against the public
+	 * key it derived itself. Only the seed holder can produce it. That is new
+	 * code on both sides, it is part of the `signer-procedure` requirement, and
+	 * the EVM rail stays SHUT until it exists — so this test asserts the gap
+	 * rather than hiding it.
+	 */
+	const wrong = parseXpub(OTHER_ACCOUNT);
+	const ix = index(OTHER_ACCOUNT);
+	const selfConsistent = [0, 1, 2, 3, 4].map((i) => ({
+		index: i,
+		address: deriveEvmAddress(wrong, i),
+	}));
+	assert.doesNotThrow(
+		() => ix.assertVectors(selfConsistent),
+		"a self-consistent pair passes whatever seed it came from — that is the " +
+			"whole limitation, and it must stay visible in a test rather than be " +
+			"contradicted by a comment",
 	);
 });
 

@@ -813,10 +813,29 @@ test("SENDING IS OPT-IN AND EXACT: only \"1\" enables it", async () => {
 			`CHAIN_RTM_SEND=${JSON.stringify(v)} must not enable sending`,
 		);
 	}
+	/*
+	 * AND THE FLAG IS NO LONGER SUFFICIENT ON ITS OWN. It lives in the one env
+	 * file all four exchange units load, so the internet-facing API used to
+	 * build a send-capable hot-wallet adapter for every self-custodied coin.
+	 * The environment now says what is PERMITTED and the caller says what is
+	 * NEEDED; see test/nodesendisolation.test.ts and adapterFromEnv.canSend.
+	 */
+	const flagOnly = adapterFromEnv({
+		symbol: "RTM", route: "bitcoin-rpc", decimals: 8,
+		env: { ...base, CHAIN_RTM_SEND: "1" },
+		fetchImpl: rpcStub({ sendtoaddress: "tx" }),
+	})!;
+	await assert.rejects(
+		() => flagOnly.send({ to: "x", amount: 1n, idempotencyKey: "k" }),
+		/read-only/,
+		"CHAIN_RTM_SEND=1 alone must not enable sending — the caller must ask too",
+	);
+
 	const on = adapterFromEnv({
 		symbol: "RTM", route: "bitcoin-rpc", decimals: 8,
 		env: { ...base, CHAIN_RTM_SEND: "1" },
 		fetchImpl: rpcStub({ sendtoaddress: "tx" }),
+		canSend: true,
 	})!;
 	assert.deepEqual(await on.send({ to: "x", amount: 1n, idempotencyKey: "k" }), { txid: "tx" });
 });

@@ -892,6 +892,75 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 		return this.rpc.canSend;
 	}
 
+	/**
+	 * CAN THE CREDENTIAL THIS ADAPTER HOLDS EXPORT A PRIVATE KEY? — asked of
+	 * the daemon, because nothing else can answer it.
+	 *
+	 * WHY THE QUESTION EXISTS. `canSend` describes this OBJECT. It says nothing
+	 * about the CREDENTIAL, and the credential is what an attacker gets. A
+	 * bitcoind-family daemon with no `rpcwhitelist` line grants every method to
+	 * every RPC user it has, so one leaked username and password is
+	 * `dumpwallet` and `sendtoaddress` on an unencrypted hot wallet — no
+	 * passphrase, no second factor, and no code in this service involved. Every
+	 * customer deposit address already issued on that chain stays spendable by
+	 * whoever took the copy, FOREVER, so rotating the credential afterwards
+	 * recovers nothing.
+	 *
+	 * That is not a hypothetical: /etc/blockle/exchange-coins.env is mode 0640
+	 * root:www-data and is loaded by the internet-facing public API, which runs
+	 * as www-data. Measured 2026-11-26. This method is how the preflight can
+	 * state the position as a fact rather than a worry.
+	 *
+	 * NO KEY CAN EVER BE RETURNED BY THIS CALL. The address passed is
+	 * deliberately not a valid address on any chain, so the only possible
+	 * outcomes are "the method is permitted and rejected the argument" and "the
+	 * method is not permitted". The verdict is read from the ERROR CODE. A
+	 * version of this that asked about a real wallet address would have the key
+	 * in this process's memory, which is the thing the whole design is avoiding.
+	 */
+	async keyExportCapability(): Promise<
+		"refused" | "permitted" | "encrypted" | "unknown"
+	> {
+		const NOT_AN_ADDRESS = "blockle-capability-probe-not-an-address";
+		try {
+			await this.rpc.call<unknown>("dumpprivkey", [NOT_AN_ADDRESS]);
+			/*
+			 * Unreachable in practice, and it is still the unsafe answer. A
+			 * daemon that returns a result for a string that cannot be an
+			 * address has either a very odd fork's semantics or no argument
+			 * validation at all; either way the method ran, so the credential
+			 * can export keys.
+			 */
+			return "permitted";
+		} catch (e) {
+			const code = e instanceof ChainError ? e.rpcCode : undefined;
+			const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+			// -5 RPC_INVALID_ADDRESS_OR_KEY: the method ran and refused the
+			// argument. That is the dangerous verdict — it means a REAL address
+			// would have been answered with its key.
+			if (code === -5) return "permitted";
+			// -13 RPC_WALLET_UNLOCK_NEEDED: the method is permitted but the
+			// wallet is encrypted, so the credential alone is not enough. Worth
+			// its own verdict because encrypting the wallet is one of the two
+			// ways to clear this, and it is the one an operator can do today.
+			if (code === -13) return "encrypted";
+			// -32601 is "method not found", which is what a method absent from
+			// an rpcwhitelist, or a daemon started with -disablewallet, answers.
+			if (code === -32601) return "refused";
+			if (msg.includes("403") || msg.includes("forbidden")) return "refused";
+			if (msg.includes("method not found") || msg.includes("disabled")) return "refused";
+			if (msg.includes("passphrase") || msg.includes("locked")) return "encrypted";
+			/*
+			 * UNKNOWN IS NOT "REFUSED". An unreachable daemon, a timeout or an
+			 * unrecognised code must not be reported as a credential that cannot
+			 * export keys — the preflight treats unknown as a failure, because
+			 * guessing in the safe-sounding direction is how a check becomes
+			 * decoration.
+			 */
+			return "unknown";
+		}
+	}
+
 	/** Find a previous send by its idempotency key, so a retry cannot double-pay. */
 	async findSend(idempotencyKey: string): Promise<{ txid: string } | undefined> {
 		const rows = await this.rpc.call<
@@ -1849,6 +1918,33 @@ export function adapterFromEnv(args: {
 		readonly incomingSource?: EvmIncomingSource;
 		readonly chainId?: number;
 	};
+	/**
+	 * DOES THE CALLING PROCESS NEED TO MOVE MONEY? Default NO.
+	 *
+	 * `CHAIN_<SYM>_SEND=1` used to be sufficient on its own, and that was a
+	 * real defect rather than a style question. The flag lives in
+	 * /etc/blockle/exchange-coins.env, ONE file, loaded as an EnvironmentFile by
+	 * four units — the public API, the deposit watcher, the reconciler and the
+	 * payout runner — so the single process that faces the internet was handed a
+	 * send-capable hot-wallet adapter for every node-custodied coin, although it
+	 * has no reason to send anything and never calls `send`.
+	 *
+	 * Now the environment says what is PERMITTED and the caller says what is
+	 * NEEDED, and sending requires both. The public API, watcher and reconciler
+	 * pass nothing and are read-only by construction: a bug, an injected route
+	 * or a deserialisation trick in the HTTP process cannot reach `send`,
+	 * because the object in that process refuses before the network is touched.
+	 *
+	 * WHAT THIS DOES NOT FIX, STATED HERE SO NOBODY READS IT AS A CLOSED HOLE.
+	 * The CREDENTIAL is still in that process's environment, and a daemon with
+	 * no `rpcwhitelist` grants every method to anyone holding it — including
+	 * `dumpwallet` and `sendtoaddress`, which do not go through this class at
+	 * all. Closing that is a deployment change (a second rpcauth user,
+	 * per-user method whitelists, and the spend credential in a root-only file
+	 * loaded by the payout runner alone). `golive.ts` has a check that fails
+	 * while it is outstanding; see `custody:node-key-export`.
+	 */
+	canSend?: boolean;
 }): ChainAdapter | undefined {
 	const pre = `CHAIN_${args.symbol.toUpperCase()}_`;
 	const url = args.env[`${pre}URL`];
@@ -1870,9 +1966,12 @@ export function adapterFromEnv(args: {
 		...(user === undefined ? {} : { user }),
 		...(pass === undefined ? {} : { password: pass }),
 		...(phrase === undefined ? {} : { passphrase: phrase }),
-		// OPT-IN, and spelled out: anything other than exactly "1" leaves this
-		// read-only, so a typo cannot enable sending.
-		allowSend: args.env[`${pre}SEND`] === "1",
+		// OPT-IN TWICE, and spelled out: the environment must permit it AND the
+		// calling process must have asked for it. Anything other than exactly
+		// "1" leaves this read-only, so a typo cannot enable sending, and a
+		// read-only process cannot be handed a send-capable adapter by a shared
+		// env file. See `canSend` above for the deployment half of that.
+		allowSend: args.canSend === true && args.env[`${pre}SEND`] === "1",
 		...(args.fetchImpl === undefined ? {} : { fetchImpl: args.fetchImpl }),
 	};
 	const rpc = new JsonRpc(cfg);

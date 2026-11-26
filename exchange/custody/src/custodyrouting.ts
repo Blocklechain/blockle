@@ -60,6 +60,22 @@ export function nodeAdapters(args: {
 	 * business issuing them.
 	 */
 	blockPool?: AddressPool;
+	/**
+	 * DOES THIS PROCESS PAY MONEY OUT? Default NO, and only the payout runner
+	 * passes true.
+	 *
+	 * The send permission used to come from `CHAIN_<SYM>_SEND=1` alone, and
+	 * that flag lives in the ONE env file every exchange unit loads — so the
+	 * internet-facing API, the watcher and the reconciler each built a
+	 * send-capable hot-wallet adapter for every self-custodied coin. None of
+	 * them has ever called `send`. Now the capability has to be asked for, and
+	 * the three read-only jobs do not ask.
+	 *
+	 * It does NOT make the credential safe: a daemon with no `rpcwhitelist`
+	 * honours `sendtoaddress` and `dumpwallet` from anyone who can read that
+	 * file, whatever this object refuses. See `adapterFromEnv.canSend`.
+	 */
+	canSend?: boolean;
 }): Map<string, ChainAdapter> {
 	const out = new Map<string, ChainAdapter>();
 	for (const coin of args.coins ?? LISTED) {
@@ -99,6 +115,12 @@ export function nodeAdapters(args: {
 					route: coin.custody,
 					decimals: coin.decimals,
 					env: args.env,
+					// Forwarded EXPLICITLY, not defaulted from the environment.
+					// The BLOCK pool above is in this file because an optional
+					// trailing argument was dropped once; a dropped `canSend`
+					// fails in the SAFE direction (a payout runner that cannot
+					// pay, which is loud) rather than the dangerous one.
+					canSend: args.canSend === true,
 				});
 		} catch (e) {
 			/*

@@ -186,8 +186,11 @@ test("NO allowSend OR ENV FLAG CAN TURN ON EVM SENDING", () => {
 	const chains = source("chains.ts");
 	assert.match(
 		chains,
-		/allowSend:\s*args\.env\[`\$\{pre\}SEND`\]\s*===\s*"1"/,
-		"the send opt-in must stay an exact === \"1\" comparison, so a typo cannot enable it",
+		/allowSend:\s*args\.canSend\s*===\s*true\s*&&\s*args\.env\[`\$\{pre\}SEND`\]\s*===\s*"1"/,
+		'the send opt-in must stay an exact === "1" comparison, so a typo cannot ' +
+			"enable it — AND must still require the calling process to ask, so the " +
+			"one env file every exchange unit loads cannot hand a send-capable " +
+			"hot-wallet adapter to the process that answers HTTP",
 	);
 });
 

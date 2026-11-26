@@ -347,7 +347,6 @@ export class Deposits {
 		 * case-significant chain changes and the fast path is unaffected.
 		 */
 		if (!addressCaseIsCosmetic(addr)) return undefined;
-		if (1 > 0) return undefined; // TEMP: simulate the pre-fix behaviour
 		const folded = this.db
 			.prepare(
 				`SELECT DISTINCT user_id FROM deposit_address

@@ -232,8 +232,14 @@ export const EVM_RAIL_REQUIREMENTS: readonly EvmRailRequirement[] = Object.freez
 			"beautifully. Every address it produces is a real Ethereum address that " +
 			"no key on this planet can spend. There is no symptom until a sweep is " +
 			"attempted weeks later, with the deposits already stranded, and no " +
-			"recovery at all. This is the only check that distinguishes 'the xpub of " +
-			"the seed the signer holds' from 'an xpub'.",
+			"recovery at all. BUT BE EXACT ABOUT WHAT THIS REQUIREMENT BUYS, " +
+			"because it used to claim more: the vectors are re-derived from the " +
+			"CONFIGURED xpub, so vectors exported from the same wrong host pass. It " +
+			"catches a stale, truncated, transposed or hand-edited vector file and a " +
+			"wrong account path — not provenance. Proving provenance needs the " +
+			"signer to SIGN a challenge with the key at the claimed index and this " +
+			"host to verify it against the public key it derived itself, which is " +
+			"new code on both sides and is part of `signer-procedure`.",
 	},
 	{
 		id: "endpoint-usable",

@@ -11,6 +11,8 @@ import Database from "better-sqlite3";
 
 import { ASSETS, custodyIds, settlementAsset } from "./assets";
 import { BitGoHoldings } from "./bitgo";
+import { BitcoinRpcAdapter } from "./chains";
+import { nodeAdapters } from "./custodyrouting";
 import { pinAndVerify } from "./ipv4";
 import { MARKETS } from "./venue";
 import { flipLive, format, preflight, type PreflightDeps } from "./golive";
@@ -112,10 +114,35 @@ async function main(): Promise<void> {
 		);
 	}
 
+	/*
+	 * ASK EACH SELF-CUSTODIED DAEMON WHAT THE READ-ONLY CREDENTIAL CAN DO.
+	 *
+	 * Built with `nodeAdapters` WITHOUT `canSend`, which is the point: these are
+	 * exactly the objects the public API, the watcher and the reconciler build,
+	 * so the verdict describes the credential those three processes actually
+	 * hold. A probe built with canSend would be measuring a different thing and
+	 * would pass while the real exposure stood.
+	 *
+	 * See golive's `custody:node-key-export`. The probe cannot return key
+	 * material: `keyExportCapability` asks about a string that is not an
+	 * address on any chain and reads the error code.
+	 */
+	const nodeKeyExport = async (): Promise<
+		readonly { chain: string; verdict: string }[]
+	> => {
+		const out: { chain: string; verdict: string }[] = [];
+		for (const [symbol, adapter] of nodeAdapters({ env: process.env })) {
+			if (!(adapter instanceof BitcoinRpcAdapter)) continue;
+			out.push({ chain: symbol, verdict: await adapter.keyExportCapability() });
+		}
+		return out;
+	};
+
 	const deps: PreflightDeps = {
 		db,
 		ledger,
 		configPath,
+		nodeKeyExport,
 		expectCustodyIds: CUSTODY_IDS,
 		haltFile: process.env.HALT_FILE ?? "/run/blockle/exchange-halts.json",
 		...(holdings === undefined ? {} : { holdings }),

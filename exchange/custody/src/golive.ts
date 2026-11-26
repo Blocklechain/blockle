@@ -147,6 +147,19 @@ export interface PreflightDeps {
 	 * liveness evidence — see the note in the runner loop.
 	 */
 	readonly haltFile?: string;
+	/**
+	 * WHAT THE READ-ONLY PROCESSES' RPC CREDENTIAL CAN DO TO THE HOT WALLET.
+	 *
+	 * One entry per self-custodied chain, from
+	 * `BitcoinRpcAdapter.keyExportCapability()`, which asks the daemon rather
+	 * than reading a config file. Absent means UNKNOWN, which this preflight
+	 * treats as a failure for the same reason `verifyCustodyEnv` does: the
+	 * question is "can the uid that serves the internet spend customer
+	 * deposits", and nobody should go live on an unanswered one.
+	 */
+	readonly nodeKeyExport?: () => Promise<
+		readonly { readonly chain: string; readonly verdict: string }[]
+	>;
 	readonly now?: () => number;
 }
 
@@ -496,6 +509,76 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 		: no("limits:fees", "Every listed asset has a withdrawal fee",
 			`unpriced, therefore unwithdrawable: ${unwithdrawable.join(", ")}. ` +
 				"Customers could buy it and never get it out.", true));
+
+	/*
+	 * ---- 6b. CAN THE INTERNET-FACING UID SPEND THE HOT WALLET? -------------
+	 *
+	 * THE MEASURED POSITION THIS CHECK EXISTS FOR, 2026-11-26.
+	 * /etc/blockle/exchange-coins.env is mode 0640 root:www-data and is loaded
+	 * as an EnvironmentFile by exchange-public-api, exchange-deposit-watcher,
+	 * exchange-reconcile AND exchange-payout-runner — all four `User=www-data`.
+	 * It carries CHAIN_{RTM,PEP,DINGO,PERBUG}_{URL,USER,PASS}. None of those
+	 * daemons has an `rpcwhitelist` line, so one credential grants every
+	 * method, and no CHAIN_*_PASSPHRASE exists because the wallets are not
+	 * encrypted (`getwalletinfo` on the perbug exchange wallet reports no
+	 * `unlocked_until` field at all). So code execution or arbitrary file read
+	 * as uid 33 is `dumpwallet` plus `sendtoaddress` on four live hot wallets,
+	 * without root and without touching this service's code.
+	 *
+	 * WHY A CHECK AND NOT A FIX. There is no code change that closes it: the
+	 * credential is in the process environment, and the dangerous methods do
+	 * not go through this service at all. `adapterFromEnv.canSend` now keeps a
+	 * send-capable OBJECT out of the read-only processes, which is worth having
+	 * and is not the same thing. The fix is a deployment change, and the remedy
+	 * string below is the whole of it.
+	 *
+	 * FUNDS-CRITICAL AND NOT NEGOTIABLE BY ARGUMENT: the failure takes 100% of
+	 * the deposits on those rails, irreversibly, and leaves every
+	 * already-issued address spendable afterwards.
+	 */
+	const REMEDY =
+		"Split the credential, then encrypt the wallets. (1) Add a SECOND rpcauth " +
+		"user to each coin's .conf plus a per-user whitelist, e.g. " +
+		"`rpcwhitelist=exread:getblockchaininfo,getbalance,getnewaddress," +
+		"listtransactions,getwalletinfo` for the read-only user and a separate " +
+		"line for the spend user. (2) Put ONLY the read-only user in " +
+		"exchange-coins.env, and move CHAIN_*_USER/PASS/SEND for the spend user " +
+		"into a root-only 0600 file that exchange-payout-runner.service alone " +
+		"loads, AFTER exchange-coins.env so it wins. (3) `encryptwallet` each hot " +
+		"wallet and put the passphrase in that same root-only file as " +
+		"CHAIN_*_PASSPHRASE. (4) Re-run this preflight: the verdict must be " +
+		"'refused' or 'encrypted' for every chain.";
+
+	if (deps.nodeKeyExport === undefined) {
+		checks.push(no("custody:node-key-export",
+			"The read-only processes' RPC credential cannot export hot-wallet keys",
+			"UNKNOWN — nothing probed the daemons, so it is not known whether the " +
+				"credential in the internet-facing process can run dumpprivkey or " +
+				"sendtoaddress. Unknown is reported as a failure here on purpose. " +
+				REMEDY, true));
+	} else {
+		try {
+			const verdicts = await deps.nodeKeyExport();
+			const bad = verdicts.filter((v) => v.verdict !== "refused");
+			const detail = verdicts
+				.map((v) => `${v.chain}=${v.verdict}`)
+				.join(", ");
+			checks.push(bad.length === 0
+				? ok("custody:node-key-export",
+					"The read-only processes' RPC credential cannot export hot-wallet keys",
+					detail === "" ? "no self-custodied chain is configured" : detail, true)
+				: no("custody:node-key-export",
+					"The read-only processes' RPC credential cannot export hot-wallet keys",
+					`${detail}. Any verdict other than 'refused' means the credential the ` +
+						"internet-facing process holds can reach wallet key material or a " +
+						"send, whatever this service's own objects refuse. " + REMEDY, true));
+		} catch (e) {
+			checks.push(no("custody:node-key-export",
+				"The read-only processes' RPC credential cannot export hot-wallet keys",
+				`the probe failed (${e instanceof Error ? e.message : String(e)}), so the ` +
+					"position is unknown. " + REMEDY, true));
+		}
+	}
 
 	const admins = (deps.env.EXCHANGE_ADMINS ?? "").trim();
 	checks.push(admins !== ""
