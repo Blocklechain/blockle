@@ -455,11 +455,67 @@ pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
 
     {
         let registry = registry.clone();
+        /*
+         * LIVE CONNECTION COUNT, AND WHY THIS SERVER NEEDS ONE.
+         *
+         * This accept loop spawns a thread per connection with no bound, and
+         * the handler had no deadline on the client socket. So a client that
+         * opened a TCP connection and sent nothing held a thread forever.
+         *
+         * blockle.org went down twice in one night on this. Found by counting
+         * threads on the wedged process: 1019, with ZERO panics in three hours.
+         * It was listening the whole time — the socket was open and the service
+         * reported active — but every thread was parked in read_request waiting
+         * on a client that would never speak, so nothing could be served. nginx
+         * showed 504 while threads were merely exhausted and 502 once the
+         * process could no longer spawn one at all.
+         *
+         * That is a slowloris, and on a public port it does not need an
+         * attacker: port scanners, half-open connections and dropped mobile
+         * links all produce it. The earlier fix in http.rs bounded OUTBOUND
+         * connects, which was a real bug but not this one.
+         *
+         * Two bounds, because either alone is insufficient: a deadline frees a
+         * stuck thread, and a cap means a flood of fast-but-numerous
+         * connections cannot exhaust the process before the deadlines fire.
+         * Over the cap we drop the connection immediately rather than queue it —
+         * refusing a connection is a bad minute, exhausting the threads is a
+         * dead site until someone restarts it by hand.
+         */
+        const MAX_LIVE_CONNECTIONS: usize = 256;
+        /// A browser sends its request bytes immediately. Ten seconds is
+        /// generous for a real client on a bad link and still frees a thread
+        /// held by one that never intends to send anything.
+        const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(10);
+        let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let registry = registry.clone();
+                let live = live.clone();
+                // Count BEFORE spawning: deciding after the spawn would mean the
+                // spawn we are trying to avoid has already happened.
+                let n = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n >= MAX_LIVE_CONNECTIONS {
+                    live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    // Dropped, which closes it. No thread, no response.
+                    continue;
+                }
                 thread::spawn(move || {
+                    // Decrement on EVERY exit path, including the early returns
+                    // below, which is what this guard is for.
+                    struct Live(Arc<std::sync::atomic::AtomicUsize>);
+                    impl Drop for Live {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    let _guard = Live(live);
+
                     let mut stream = stream;
+                    // THE DEADLINE THAT WAS MISSING. Without it read_request
+                    // blocks forever on a silent client.
+                    let _ = stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT));
+                    let _ = stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT));
                     let peer_ip = stream.peer_addr().ok().map(|a| a.ip());
                     let Ok(req) = http::read_request(&mut stream) else { return };
                     let (status, ctype, body) = route(&registry, &req, peer_ip);
@@ -4328,7 +4384,23 @@ git clone https://github.com/blocklechain/blockle &amp;&amp; cd blockle/chain &a
         "/wallet", WALLET_SOFTWARE_JSONLD, body)
 }
 
-const LEGAL_EFFECTIVE: &str = "9 October 2026";
+/*
+ * BUMPED 2026-11-26, because both legal pages changed materially and a stale
+ * effective date on a changed document is its own problem.
+ *
+ * WHY THEY CHANGED. Both pages described Blockle as non-custodial THROUGHOUT,
+ * and said so in the specific terms that matter in a dispute: the old §5 called
+ * the exchange "a non-custodial venue ... we never hold user funds", the old §7
+ * asserted that running the interface "does not make us a custodian, broker,
+ * exchange operator, or money transmitter", and the privacy page's summary said
+ * flatly "We do not perform KYC".
+ *
+ * exchange.blockle.org is now live on mainnet and HOLDS CUSTOMER ASSETS. Every
+ * one of those sentences is therefore false about it. The wallets are still
+ * non-custodial and the new text says so precisely — the distinction is the
+ * point, rather than one claim replacing the other.
+ */
+const LEGAL_EFFECTIVE: &str = "26 November 2026";
 
 fn page_privacy() -> String {
     let body = format!(
@@ -4338,7 +4410,8 @@ fn page_privacy() -> String {
 <h2>The short version</h2>
 <ul>
 <li><b>We never hold your keys, seeds, funds, or wallet passwords.</b> They are generated and stored <b>on your device</b>, encrypted (scrypt + AES-256-GCM), and are never transmitted to us.</li>
-<li><b>We do not perform KYC</b> and do not collect your name, email, or identity to use the wallets or the non-custodial exchange.</li>
+<li><b>The wallets need no account and no identity.</b> You can download, install and use the Blockle wallets without giving us your name, email, or any identifying information.</li>
+<li><b>The custodial exchange is different.</b> Signing in to exchange.blockle.org creates an account, and we may be required to verify your identity before permitting activity there. Do not assume the wallets' privacy properties extend to it.</li>
 <li>Your AI-agent provider key (if you connect one) stays in your device's encrypted vault and is sent only to the AI provider you chose (e.g. Anthropic/OpenAI), never to us.</li>
 </ul>
 
