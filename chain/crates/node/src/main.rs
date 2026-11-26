@@ -2641,27 +2641,48 @@ mod submit_tx_tests {
 
     fn tx_spending(prev: OutPoint) -> Transaction {
         Transaction {
+            version: 1,
             inputs: vec![TxInput { prev, pubkey: vec![], signature: vec![] }],
             outputs: vec![TxOutput { recipient: [9u8; 32], amount: 1 }],
-            ..Default::default()
+            coinbase_data: vec![],
+            shielded: None,
+            contract: None,
         }
     }
 
-    /// THE BUG THAT ATE TWO TRANSACTIONS. `prune_confirmed` is what keeps the
-    /// local mempool — now written on BOTH submit paths — from growing
-    /// without bound, and it must tell "still pending" from "already mined"
-    /// by the only evidence that cannot lie: whether the inputs are still
-    /// unspent on chain.
+    fn shielded_only_tx() -> Transaction {
+        Transaction {
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            coinbase_data: vec![],
+            shielded: None,
+            contract: None,
+        }
+    }
+
+    /// THE BUG THAT ATE TWO TRANSACTIONS, as a property.
+    ///
+    /// `submit_tx` now writes the transaction to the local mempool on BOTH
+    /// paths, because `build_funded_tx` reads that mempool to know which of
+    /// our coins are already committed. `prune_confirmed` is what keeps the
+    /// file from growing forever, and it has to tell "still pending" from
+    /// "already mined" by the only evidence that cannot lie: whether the
+    /// inputs are still unspent on chain.
     #[test]
     fn a_pending_tx_is_kept_and_a_confirmed_one_is_dropped() {
         let mut chain = Chain::new(ChainParams::regtest());
-        let unspent = OutPoint { txid: [1u8; 32], index: 0 };
-        let spent = OutPoint { txid: [2u8; 32], index: 0 };
-        // Only `unspent` is in the UTXO set, which is exactly the state after
-        // the transaction spending `spent` confirmed.
+        let unspent = OutPoint { txid: [1u8; 32], vout: 0 };
+        let spent = OutPoint { txid: [2u8; 32], vout: 0 };
+        // Only `unspent` is in the UTXO set — exactly the state after the
+        // transaction spending `spent` confirmed.
         chain.utxos.insert(
             unspent,
-            blockle_chain::UtxoEntry { recipient: [9u8; 32], amount: 10, height: 1 },
+            blockle_chain::UtxoEntry {
+                output: TxOutput { recipient: [9u8; 32], amount: 10 },
+                height: 1,
+                coinbase: false,
+            },
         );
 
         let mut mempool = vec![tx_spending(spent), tx_spending(unspent)];
@@ -2670,19 +2691,29 @@ mod submit_tx_tests {
         assert_eq!(mempool.len(), 1, "the confirmed transaction must be dropped");
         assert_eq!(
             mempool[0].inputs[0].prev, unspent,
-            "the one still pending must survive — dropping it would let the \
-             next send reuse a coin it has already committed, which is the \
-             double spend this whole mechanism exists to prevent"
+            "the still-pending one must survive: dropping it would let the next \
+             send reuse a coin already committed, which is the double spend that \
+             silently ate the reveal and the proof-of-validation of the \
+             Intelligence pool's epoch duties"
         );
     }
 
-    /// A transaction with no transparent inputs has nothing to test, so it is
-    /// kept rather than silently discarded.
+    /// A transaction with no transparent inputs has nothing to test against the
+    /// UTXO set, so it is kept rather than silently discarded.
     #[test]
     fn a_tx_with_no_transparent_inputs_is_kept() {
         let chain = Chain::new(ChainParams::regtest());
-        let mut mempool = vec![Transaction::default()];
+        let mut mempool = vec![shielded_only_tx()];
         prune_confirmed(&chain, &mut mempool);
         assert_eq!(mempool.len(), 1);
+    }
+
+    /// An empty mempool is the common case and must not panic.
+    #[test]
+    fn an_empty_mempool_is_fine() {
+        let chain = Chain::new(ChainParams::regtest());
+        let mut mempool: Vec<Transaction> = vec![];
+        prune_confirmed(&chain, &mut mempool);
+        assert!(mempool.is_empty());
     }
 }
