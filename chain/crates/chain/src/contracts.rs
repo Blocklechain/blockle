@@ -17,7 +17,8 @@ use blockle_vm as vm;
 pub const DEPLOY_GAS_BASE: u64 = 100;
 pub const DEPLOY_GAS_PER_BYTE: u64 = 10;
 
-#[derive(Clone, Debug)]
+/// `PartialEq`/`Eq`: see the note on `PoolState`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractInfo {
     pub code: Vec<u8>,
     pub balance: u64,

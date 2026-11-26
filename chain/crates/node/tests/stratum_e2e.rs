@@ -82,6 +82,8 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
             mine_blocks: None,
             mine_interval: None,
             pools: vec![(stratum_addr.clone(), opts)],
+            reorg_authority: false,
+            selfcheck_reorg: false,
         },
         chain,
         vec![],

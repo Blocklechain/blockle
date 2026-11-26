@@ -133,6 +133,17 @@ enum Cmd {
         /// Seconds to pause after each locally mined block (regtest pacing).
         #[arg(long)]
         mine_interval: Option<u64>,
+        /// Break-glass: rebuild every reorg candidate from genesis instead of
+        /// from a retained prefix snapshot. Correct but ~17 min per announced
+        /// fork at current height; only for diagnosing a suspected
+        /// bounded-reorg disagreement.
+        #[arg(long = "reorg-authority")]
+        reorg_authority: bool,
+        /// Canary: cross-check every bounded reorg against a from-genesis
+        /// rebuild and refuse the adoption if they disagree. Pays the full
+        /// from-genesis cost; never leave this on a node serving miners.
+        #[arg(long = "selfcheck-reorg")]
+        selfcheck_reorg: bool,
     },
     /// Mine blocks offline to an address (defaults to your wallet).
     Mine {
@@ -589,10 +600,11 @@ fn main() -> Result<()> {
             println!("{}", encode_address(&kp.address()));
             Ok(())
         }
-        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, rpc, rpc_user, rpc_password, stratum_direct, stratum_direct_pplns, mine_interval } => start(
+        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, rpc, rpc_user, rpc_password, stratum_direct, stratum_direct_pplns, mine_interval, reorg_authority, selfcheck_reorg } => start(
             &datadir, params, listen, connect, mine, mine_blocks, address, stratum,
             stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, rpc, rpc_user,
             rpc_password, stratum_direct, stratum_direct_pplns, mine_interval,
+            reorg_authority, selfcheck_reorg,
         ),
         Cmd::Mine { blocks, address } => mine_cmd(&datadir, params, blocks, address),
         Cmd::Balance { address } => balance(&datadir, params, address),
@@ -761,6 +773,8 @@ fn start(
     stratum_direct: Vec<String>,
     stratum_direct_pplns: Vec<String>,
     mine_interval: Option<u64>,
+    reorg_authority: bool,
+    selfcheck_reorg: bool,
 ) -> Result<()> {
     use blockle_node::stratum::{PoolMode, PoolOpts};
     let has_pool = stratum.is_some()
@@ -820,7 +834,15 @@ fn start(
     let run_payouts =
         pools.iter().any(|(_, o)| o.mode == PoolMode::Pplns) || !stratum_direct_pplns.is_empty();
 
-    let chain = storage::load_chain_or_empty(datadir, params.clone())?;
+    // SEEDED FROM THE STARTUP REPLAY, not from a second pass: the reorg ring
+    // must be warm before the first headers message arrives, or a node that
+    // boots already at the tip rebuilds from genesis for every shallow fork.
+    let (chain, reorg_prefixes) = storage::load_chain_with_prefixes(
+        datadir,
+        params.clone(),
+        p2p::SNAP_INTERVAL,
+        p2p::SNAP_RING,
+    )?;
     let mempool = storage::load_mempool(datadir)?;
     match chain.height() {
         Some(h) => println!(
@@ -830,7 +852,7 @@ fn start(
         None => println!("[chain] empty chain — waiting to sync from peers"),
     }
     let self_addr = listen.replace("0.0.0.0", "127.0.0.1").replace("[::]", "127.0.0.1");
-    let node = p2p::Node::new(
+    let node = p2p::Node::new_with_prefixes(
         p2p::NodeConfig {
             datadir: datadir.to_path_buf(),
             params,
@@ -841,9 +863,12 @@ fn start(
             mine_blocks,
             mine_interval,
             pools,
+            reorg_authority,
+            selfcheck_reorg,
         },
         chain,
         mempool,
+        reorg_prefixes,
     );
     blockle_node::pool::spawn_explorer_writer(node.clone(), datadir.join("explorer.json"));
     for (specs, mode) in [(&stratum_direct, PoolMode::Solo), (&stratum_direct_pplns, PoolMode::Pplns)] {

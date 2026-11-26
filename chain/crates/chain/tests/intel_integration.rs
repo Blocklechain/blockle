@@ -67,7 +67,7 @@ fn register_subnet_and_neuron_through_consensus() {
     assert_eq!(chain.intel.neurons[0].owner, miner.address());
 
     // the chain still rebuilds identically from its blocks (replay-safe state)
-    let rebuilt = Chain::from_blocks(ChainParams::regtest(), chain.blocks.clone()).unwrap();
+    let rebuilt = Chain::from_arc_blocks(ChainParams::regtest(), chain.blocks.clone()).unwrap();
     assert_eq!(rebuilt.intel, chain.intel, "intel state is deterministic on replay");
 }
 
@@ -162,7 +162,7 @@ fn emission_epoch_distributes_and_claims() {
     );
 
     // Replay determinism: the whole emission/claim history rebuilds identically.
-    let rebuilt = Chain::from_blocks({ let mut q = ChainParams::regtest(); q.intel_alpha_bps = 2_000; q.intel_epoch_len = 4; q }, chain.blocks.clone()).unwrap();
+    let rebuilt = Chain::from_arc_blocks({ let mut q = ChainParams::regtest(); q.intel_alpha_bps = 2_000; q.intel_epoch_len = 4; q }, chain.blocks.clone()).unwrap();
     assert_eq!(rebuilt.intel, chain.intel, "intel emission state is deterministic on replay");
 }
 

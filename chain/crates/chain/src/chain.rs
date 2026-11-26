@@ -1,6 +1,7 @@
 //! Chain state and full consensus validation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use blockle_core::hash::Hash32;
@@ -10,7 +11,7 @@ use blockle_pow::parent;
 use blockle_pow::difficulty::{
     block_work, energy_work, hash_meets_target, lwma_coupled_next_bits, lwma_next_bits,
 };
-use blockle_pow::{energy_coeff, ENERGY_COEFF_SCALE};
+use blockle_pow::{energy_coeff, max_energy_coeff, ENERGY_COEFF_SCALE};
 use blockle_pow::equihash;
 use blockle_pow::U256;
 use thiserror::Error;
@@ -84,7 +85,23 @@ pub struct UtxoEntry {
 #[derive(Clone)]
 pub struct Chain {
     pub params: ChainParams,
-    pub blocks: Vec<Block>,
+    /// BEHIND AN Arc PER BLOCK ON PURPOSE.
+    ///
+    /// This was `Vec<Block>`, which made `Chain::clone()` deep-copy every
+    /// transaction of every block — 954 MB of block bodies at height 82,000.
+    /// That cost was paid on the reorg path (`blocks[..start].to_vec()` under
+    /// the state lock) and, worse, it made *retaining a previous Chain* for the
+    /// bounded reorg impossible: any retained copy raises the `Arc<Chain>`
+    /// refcount in `p2p::SharedState`, so the next `Arc::make_mut` on a block
+    /// connect would deep-copy a gigabyte — re-creating the glibc-arena RSS
+    /// blowup (24.8 GB RSS for a 441 MB chain) that the `Arc<Chain>` there was
+    /// introduced to fix.
+    ///
+    /// With `Arc<Block>` a clone copies one pointer per block (82k × 8 B =
+    /// 0.66 MB) plus the state maps, which is what makes the snapshot ring in
+    /// `p2p::SharedState::snaps` affordable. Callers keep using the elements as
+    /// `Block` through `Deref`.
+    pub blocks: Vec<Arc<Block>>,
     pub utxos: HashMap<OutPoint, UtxoEntry>,
     pub contracts: ContractMap,
     pub contract_storage: StorageMap,
@@ -96,12 +113,58 @@ pub struct Chain {
     /// Revealed nullifiers (spent notes).
     pub nullifiers: HashSet<Hash32>,
     /// Derived (non-consensus) BLOCK-721 ownership index: (contract, token id)
-    /// -> current owner. Rebuilt from Transfer events as blocks connect, so a
-    /// reorg (which replays via `from_blocks`) reconstructs it from scratch.
+    /// -> current owner. Rebuilt from Transfer events as blocks connect.
+    ///
+    /// A reorg never *un-indexes* anything: it replays forward from a state
+    /// that predates the fork (a retained prefix snapshot, or `from_blocks`
+    /// from genesis for forks deeper than the snapshot horizon), so the index
+    /// is reconstructed rather than patched. The wrong conclusion to draw from
+    /// the bounded-reorg change is that this comment's old claim ("a reorg
+    /// replays via `from_blocks`") still holds literally — it does not; the
+    /// *property* it relied on (forward replay only, never rollback) is what
+    /// still holds, and is why there is no un-index path to get wrong.
     pub nft_owner: HashMap<([u8; 32], [u8; 32]), [u8; 32]>,
     /// Blockle Intelligence consensus state (subnet/neuron registries). Empty and
     /// inert until `params.intel_activation_height`. See crate::intel.
     pub intel: crate::intel::IntelState,
+    /// Prefix sums of the fork-choice work metric: `work_prefix[n]` is the
+    /// total work of `blocks[..n]`, so `work_prefix.len() == blocks.len() + 1`
+    /// and `work_prefix[0] == 0`.
+    ///
+    /// WHY A PREFIX VECTOR AND NOT JUST A RUNNING TOTAL: `total_work()` used to
+    /// fold over every block on every call, and p2p calls it 3-4 times per
+    /// adoption, once per `Tip` message and once per `Headers` message. A
+    /// running scalar would fix that, but the *header gate* additionally needs
+    /// the work of a PREFIX of our chain (the part a fork would retain). That
+    /// gate used to compute the prefix with raw `block_work` while comparing
+    /// against the energy-weighted `total_work()` — a unit mismatch that both
+    /// stalled syncing nodes forever and triggered hundreds of pointless
+    /// from-genesis rebuilds an hour. With prefix sums the gate reads the
+    /// weighted prefix in O(1) and the mismatch cannot be reintroduced.
+    ///
+    /// Stable under extension because the weighting keys off a fixed
+    /// activation height (`params.cross_algo_activation_height`), never off the
+    /// current tip; truncated and rebuilt by `from_blocks` on a reorg.
+    work_prefix: Vec<U256>,
+    /// Heights of the blocks belonging to each mining lane, ascending.
+    ///
+    /// WHY THIS EXISTS: `next_bits_for` / `lane_last_time` need the most recent
+    /// `lwma_window + 1` blocks OF ONE LANE, and an idle lane's 18th-most-recent
+    /// block can be thousands of blocks back — so, unlike the coupled retarget,
+    /// a fixed tail of `blocks` is NOT sufficient and the obvious "just take the
+    /// last 18 blocks" optimisation is wrong. Without this index every
+    /// `connect_block` filtered the whole chain (measured 1.2 ms of the 1.4 ms
+    /// per-block cost at height 58,000), which is what made `from_blocks`
+    /// ~O(n^1.6) and a node restart a 17-minute replay.
+    ///
+    /// Consensus-affecting: `next_bits_for_at` is enforced as
+    /// `header.bits != expected_bits`, so a stale or mis-ordered index is a
+    /// chain split. It is an owned field, so `Clone` carries it exactly and
+    /// `from_blocks` rebuilds it from the same `connect_block` calls; debug
+    /// builds cross-check it against a full reverse walk on every connect, and
+    /// `tests/reorg_equivalence.rs` checks it height-by-height, lane-by-lane
+    /// against the retained full-scan implementation over real mainnet blocks.
+    lane_pos: HashMap<&'static str, Vec<u32>>,
 }
 
 pub fn now_unix() -> i64 {
@@ -127,14 +190,76 @@ impl Chain {
             nullifiers: HashSet::new(),
             nft_owner: HashMap::new(),
             intel: crate::intel::IntelState::default(),
+            work_prefix: vec![U256::zero()],
+            lane_pos: HashMap::new(),
         }
     }
 
     /// Rebuild a chain by re-validating every stored block.
+    ///
+    /// This is the REFERENCE IMPLEMENTATION of chain assembly and is kept
+    /// deliberately: it is both the fallback for forks deeper than the reorg
+    /// snapshot horizon and the differential oracle every bounded-reorg test
+    /// compares against. Do not delete it in the name of having one path.
     pub fn from_blocks(params: ChainParams, blocks: Vec<Block>) -> Result<Self, ChainError> {
         let mut chain = Chain::new(params);
         for block in blocks {
             chain.connect_block(block)?;
+        }
+        Ok(chain)
+    }
+
+    /// [`Chain::from_blocks`], but also handing back validated PREFIX states
+    /// taken every `interval` blocks over the last `keep` of them.
+    ///
+    /// WHY THIS EXISTS: the bounded-reorg path replays forward from a retained
+    /// prefix, and a prefix state cannot be recovered from the tip state after
+    /// the fact — connecting blocks mutates the maps in place, so by the time
+    /// you hold the tip, height-32's state is gone. The only cheap moment to
+    /// capture it is while passing through it.
+    ///
+    /// And a node that starts up already at the tip has no other chance.
+    /// `Node::new` began with an empty ring, so a restarted node fell back to
+    /// the from-genesis rebuild for even a depth-1 fork — which is 17 minutes
+    /// at height 82,000, retried every 10 seconds, forever. That is the
+    /// reported "stuck at 57999, reinstall did not help": reinstalling
+    /// preserves the datadir, so the restart put it straight back into the
+    /// same hole. See `a_node_restarted_from_its_datadir_has_no_replay_base`.
+    ///
+    /// COSTS NOTHING EXTRA. The startup replay already connects every block
+    /// from genesis; this adds one `Arc` clone per `interval` blocks, and the
+    /// deep copy it implies is deferred to the next `Arc::make_mut` — which is
+    /// the state maps, not the block bodies.
+    pub fn from_blocks_with_prefixes(
+        params: ChainParams,
+        blocks: Vec<Block>,
+        interval: u64,
+        keep: usize,
+    ) -> Result<(Self, Vec<Arc<Self>>), ChainError> {
+        let mut chain = Chain::new(params);
+        let mut prefixes: VecDeque<Arc<Self>> = VecDeque::new();
+        for block in blocks {
+            chain.connect_block(block)?;
+            let len = chain.blocks.len() as u64;
+            if interval != 0 && len % interval == 0 {
+                prefixes.push_back(Arc::new(chain.clone()));
+                while prefixes.len() > keep {
+                    prefixes.pop_front();
+                }
+            }
+        }
+        Ok((chain, prefixes.into_iter().collect()))
+    }
+
+    /// [`Chain::from_blocks`] over already-shared blocks — identical validation,
+    /// without copying each block body to hand it over.
+    pub fn from_arc_blocks(
+        params: ChainParams,
+        blocks: Vec<Arc<Block>>,
+    ) -> Result<Self, ChainError> {
+        let mut chain = Chain::new(params);
+        for block in blocks {
+            chain.connect_block_arc(block)?;
         }
         Ok(chain)
     }
@@ -153,7 +278,77 @@ impl Chain {
     /// chain is the one backed by the most real power draw, not the most raw
     /// hashes. Pre-fork blocks keep counting at their raw work so history is
     /// unchanged.
+    /// O(1): the last entry of `work_prefix`. Was an O(height) fold — see the
+    /// `work_prefix` field comment for why that mattered.
     pub fn total_work(&self) -> U256 {
+        *self.work_prefix.last().expect("work_prefix is never empty")
+    }
+
+    /// Accumulated work of `blocks[..n]` — the work a fork rooted at height `n`
+    /// would RETAIN. O(1), and in the same energy-weighted units as
+    /// [`Chain::total_work`], which is the whole point: scoring the retained
+    /// prefix in raw `block_work` while comparing against a weighted total is
+    /// exactly the bug that stalled every fresh install at a fixed height.
+    ///
+    /// `n` is clamped to the chain length.
+    pub fn work_upto(&self, n: usize) -> U256 {
+        self.work_prefix[n.min(self.blocks.len())]
+    }
+
+    /// One block's contribution to the fork-choice metric at `height`.
+    /// Energy-weighted at/above `cross_algo_activation_height`, raw below it,
+    /// so history is unchanged. Single source of truth for `work_prefix`.
+    fn block_fork_work(&self, height: u64, lane: &'static str, bits: u32) -> U256 {
+        if height >= self.params.cross_algo_activation_height {
+            energy_work(bits, energy_coeff(lane), ENERGY_COEFF_SCALE)
+        } else {
+            block_work(bits)
+        }
+    }
+
+    /// UPPER BOUND on the fork-choice work a block could contribute at
+    /// `height`, given only its header.
+    ///
+    /// WHY A BOUND AND NOT THE VALUE. The fork-choice metric is energy-weighted
+    /// above `cross_algo_activation_height`, and the weight comes from the
+    /// block's LANE — which `lane_of` reads from `block.aux_pow.parent_algo`,
+    /// i.e. from the block BODY. A `BlockHeader` does not carry its lane, and a
+    /// merged-mined header is indistinguishable from any other merged header
+    /// (empty solution, zero nonce). So a peer's announced headers CANNOT be
+    /// scored exactly — the coefficients span sha256d 5_420 to native
+    /// 1_021_700_000_000_000, a factor of 1.9e11, so guessing is not an option
+    /// either.
+    ///
+    /// THE WRONG CONCLUSION, AND THE BUG IT CAUSED: that the header pre-gate
+    /// can just sum `block_work` and compare against `total_work()`. Those are
+    /// different units above the activation height. Measured on real mainnet
+    /// blocks, our own weighted total overtook the raw sum by 9.8e16 around
+    /// height 57,000 — more than the ~4.9e16 of raw work a full 2000-block
+    /// batch adds — so from then on EVERY announced batch scored as lighter and
+    /// the gate took a silent `return`. No log, no `GetBlocks`, no error: a
+    /// fresh wallet synced to a fixed height and reported "stuck updating"
+    /// forever, surviving a reinstall, because the data is immutable. Nodes
+    /// stalled at 57999, 57370 and 56999 depending only on where their
+    /// 2000-block batch boundary happened to land.
+    ///
+    /// So this returns the most generous value any lane could justify. It is
+    /// ONE-SIDED BY DESIGN: it may overestimate (we fetch blocks we end up
+    /// rejecting, which is cheap), and it may never underestimate (which would
+    /// be the stall). The authoritative comparison stays in the adoption gate,
+    /// where full blocks are in hand and `total_work()` is exact.
+    pub fn header_work_upper_bound(&self, height: u64, bits: u32) -> U256 {
+        if height >= self.params.cross_algo_activation_height {
+            energy_work(bits, max_energy_coeff(), ENERGY_COEFF_SCALE)
+        } else {
+            block_work(bits)
+        }
+    }
+
+    /// Recompute the fork-choice total by folding over every block — the
+    /// pre-`work_prefix` implementation, retained as the differential oracle
+    /// for `work_prefix` (asserted per connect in debug builds, and
+    /// height-by-height in `tests/reorg_equivalence.rs`).
+    pub fn recompute_total_work(&self) -> U256 {
         let act = self.params.cross_algo_activation_height;
         self.blocks.iter().enumerate().fold(U256::zero(), |acc, (h, b)| {
             let w = if (h as u64) >= act {
@@ -220,7 +415,34 @@ impl Chain {
     /// `target_spacing × lane_count`, so the lanes together emit one block
     /// per `target_spacing` while staying independently calibrated to their
     /// hardware (an S19's sha256d and an L7's scrypt share nothing).
+    /// BOUNDED, AND NOT BY TAKING THE LAST N BLOCKS. `lwma_next_bits` reads only
+    /// `lwma_window + 1` (= 18 on mainnet) entries and returns `pow_limit` when
+    /// given fewer, so handing it the lane's last 18 blocks is the same input —
+    /// but those 18 are not in any fixed window of `blocks`: an idle lane's
+    /// 18th-most-recent block can be thousands of blocks back. Hence
+    /// `lane_pos`. The old code filtered the entire chain here on every single
+    /// `connect_block`.
     pub fn next_bits_for(&self, lane: &str) -> u32 {
+        let spacing = self.params.target_spacing * self.lanes().len() as u64;
+        let want = self.params.lwma_window + 1;
+        let headers: Vec<(u32, i64)> = match self.lane_pos.get(lane) {
+            Some(pos) => pos[pos.len().saturating_sub(want)..]
+                .iter()
+                .map(|h| {
+                    let b = &self.blocks[*h as usize];
+                    (b.header.bits, b.header.time as i64)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        lwma_next_bits(spacing, self.params.lwma_window, self.params.pow_limit, &headers)
+    }
+
+    /// The pre-`lane_pos` whole-chain filter, kept as the differential oracle
+    /// for [`Chain::next_bits_for`]. Consensus-critical equality: a single
+    /// disagreement is a chain split, so this is checked height-by-height and
+    /// lane-by-lane over real mainnet blocks in `tests/reorg_equivalence.rs`.
+    pub fn next_bits_for_fullscan(&self, lane: &str) -> u32 {
         let spacing = self.params.target_spacing * self.lanes().len() as u64;
         let headers: Vec<(u32, i64)> = self
             .blocks
@@ -240,6 +462,40 @@ impl Chain {
     /// so real power draw per block is equalised across lanes. See
     /// `docs/CROSS-ALGO-COUPLING.md`.
     pub fn next_bits_coupled(&self, lane: &str) -> u32 {
+        self.coupled_bits_for_coeff(energy_coeff(lane))
+    }
+
+    /// Shared body of the coupled retarget, bounded to the `lwma_window + 1`
+    /// most recent blocks ACROSS ALL LANES (unlike the per-lane retarget, a
+    /// fixed tail of `blocks` IS the right window here, because every block
+    /// counts). `lwma_coupled_next_bits` slices the last `window + 1` entries
+    /// itself and returns `pow_limit` when given fewer, so a shorter tail is
+    /// the same input in both branches — bit-identical by construction.
+    ///
+    /// This used to build a `Vec` over EVERY block to read 18 of them: ~4,600×
+    /// waste at height 82,000, measured at 1.2 ms of the 1.4 ms cost of a
+    /// single `connect_block`. That one line is most of why `from_blocks` was
+    /// ~O(n^1.6) and a node restart cost 17 minutes.
+    fn coupled_bits_for_coeff(&self, lane_coeff: u64) -> u32 {
+        let want = self.params.lwma_window + 1;
+        let tail = &self.blocks[self.blocks.len().saturating_sub(want)..];
+        let headers: Vec<(u32, i64, u64)> = tail
+            .iter()
+            .map(|b| (b.header.bits, b.header.time as i64, energy_coeff(Self::lane_of(b))))
+            .collect();
+        lwma_coupled_next_bits(
+            self.params.target_spacing,
+            self.params.lwma_window,
+            self.params.pow_limit,
+            ENERGY_COEFF_SCALE,
+            &headers,
+            lane_coeff,
+        )
+    }
+
+    /// Whole-chain version of [`Chain::next_bits_coupled`], retained as its
+    /// differential oracle. See `next_bits_for_fullscan`.
+    pub fn next_bits_coupled_fullscan(&self, lane: &str) -> u32 {
         let headers: Vec<(u32, i64, u64)> = self
             .blocks
             .iter()
@@ -263,19 +519,7 @@ impl Chain {
     /// computed difficulty (informational before activation, authoritative
     /// after). See `docs/CROSS-ALGO-COUPLING.md`.
     pub fn coupled_base_bits(&self) -> u32 {
-        let headers: Vec<(u32, i64, u64)> = self
-            .blocks
-            .iter()
-            .map(|b| (b.header.bits, b.header.time as i64, energy_coeff(Self::lane_of(b))))
-            .collect();
-        lwma_coupled_next_bits(
-            self.params.target_spacing,
-            self.params.lwma_window,
-            self.params.pow_limit,
-            ENERGY_COEFF_SCALE,
-            &headers,
-            ENERGY_COEFF_SCALE,
-        )
+        self.coupled_bits_for_coeff(ENERGY_COEFF_SCALE)
     }
 
     /// Grace window and halflife (seconds) for the quiet-lane difficulty decay
@@ -299,8 +543,36 @@ impl Chain {
         }
     }
 
-    /// Timestamp of the most recent block mined on `lane`, if any.
+    /// Timestamp of the most recent block mined on `lane`, if any. O(1) via
+    /// `lane_pos` instead of a reverse walk that, for a lane that has gone
+    /// quiet, scanned back thousands of blocks — on every `connect_block`.
     fn lane_last_time(&self, lane: &str) -> Option<i64> {
+        let t = self
+            .lane_pos
+            .get(lane)
+            .and_then(|pos| pos.last())
+            .map(|h| self.blocks[*h as usize].header.time as i64);
+        // The index is consensus-affecting (it feeds the quiet-lane decay,
+        // which feeds `expected_bits`), so debug builds verify it against the
+        // no-index reverse walk it replaced.
+        //
+        // CAPPED AT 4096 BLOCKS ON PURPOSE: the oracle is O(height), so running
+        // it unconditionally would reintroduce the very O(n²) shape this change
+        // removes — and would make the height-independence assertion in
+        // `tests/reorg_equivalence.rs` measure the assertion instead of the
+        // code. Every ordinary test chain is far shorter than the cap, so the
+        // check is live where it can run cheaply; the long chains are covered
+        // by that test's explicit height-by-height differential instead.
+        debug_assert!(
+            self.blocks.len() > 4096 || t == self.lane_last_time_fullscan(lane),
+            "lane_pos disagrees with a full reverse walk for lane {lane}"
+        );
+        t
+    }
+
+    /// Reverse-walk version of [`Chain::lane_last_time`] — needs no index, so it
+    /// can validate the index. Kept as the oracle, used by `debug_assert`.
+    fn lane_last_time_fullscan(&self, lane: &str) -> Option<i64> {
         self.blocks
             .iter()
             .rev()
@@ -325,6 +597,43 @@ impl Chain {
             return base;
         }
         match self.lane_last_time(lane) {
+            Some(last) => {
+                let (grace, halflife) = self.decay_params(height);
+                blockle_pow::difficulty::decayed_next_bits(
+                    base,
+                    self.params.pow_limit,
+                    now_ts - last,
+                    grace,
+                    halflife,
+                )
+            }
+            None => base,
+        }
+    }
+
+    /// [`Chain::next_bits_for_at`] computed entirely from whole-chain scans —
+    /// the differential oracle for the ENFORCED difficulty function.
+    ///
+    /// Worth having separately from the oracles for its two parts, because
+    /// `next_bits_for_at` depends on TWO bounded indexes at once: the LWMA base
+    /// (via `lane_pos`) and the decay's "when did this lane last appear"
+    /// (via `lane_pos` again, through `lane_last_time`). Checking each part in
+    /// isolation would miss a disagreement in how they compose, and this is the
+    /// function `connect_block` enforces as `header.bits != expected_bits` — so
+    /// a difference here is a chain split, not a slow path.
+    ///
+    /// Test-only in practice: it is O(height) by construction.
+    pub fn next_bits_for_at_via_fullscan(&self, lane: &str, now_ts: i64) -> u32 {
+        let height = self.blocks.len() as u64;
+        let base = if height >= self.params.cross_algo_activation_height {
+            self.next_bits_coupled_fullscan(lane)
+        } else {
+            self.next_bits_for_fullscan(lane)
+        };
+        if height < self.params.decay_activation_height {
+            return base;
+        }
+        match self.lane_last_time_fullscan(lane) {
             Some(last) => {
                 let (grace, halflife) = self.decay_params(height);
                 blockle_pow::difficulty::decayed_next_bits(
@@ -800,6 +1109,14 @@ impl Chain {
 
     /// Validate `block` as the next block and connect it.
     pub fn connect_block(&mut self, block: Block) -> Result<(), ChainError> {
+        self.connect_block_arc(Arc::new(block))
+    }
+
+    /// [`Chain::connect_block`] over an already-shared block. Identical checks in
+    /// identical order — this is the single state transition of `Chain`, and
+    /// both `from_blocks` and the bounded reorg replay are nothing but loops
+    /// over it, which is what makes them the same function of the same inputs.
+    pub fn connect_block_arc(&mut self, block: Arc<Block>) -> Result<(), ChainError> {
         let height = self.blocks.len() as u64;
         let header = &block.header;
 
@@ -959,7 +1276,19 @@ impl Chain {
         self.note_leaves = lview;
         self.intel = iview;
         self.index_nft_logs(&block_logs);
+        // Derived indexes, maintained in the same commit so they can never
+        // describe a block that failed validation. Order matters only in that
+        // all three must agree on `height`.
+        let fork_work = self.block_fork_work(height, lane, block.header.bits);
+        let prev_work = *self.work_prefix.last().expect("work_prefix is never empty");
         self.blocks.push(block);
+        self.work_prefix.push(prev_work.saturating_add(fork_work));
+        self.lane_pos.entry(lane).or_default().push(height as u32);
+        debug_assert_eq!(self.work_prefix.len(), self.blocks.len() + 1);
+        debug_assert!(
+            self.blocks.len() > 4096 || self.total_work() == self.recompute_total_work(),
+            "work_prefix disagrees with a full fold over the chain"
+        );
         Ok(())
     }
 
@@ -1017,6 +1346,200 @@ impl Chain {
             &mut cview,
             &mut sview,
         )
+    }
+
+    /// A single hash committing to EVERY piece of this chain's state: the block
+    /// sequence plus every mutable map, in a canonical (key-sorted) order so
+    /// `HashMap` iteration order cannot affect it.
+    ///
+    /// WHY THIS EXISTS. `header.state_root` is forced to zero in this protocol
+    /// version (`ChainError::BadStateRoot`), so there is NO protocol-level
+    /// detection of two nodes' state diverging: a node can hold a wrong UTXO
+    /// set forever and still accept and serve every block. That is tolerable
+    /// while a reorg is a from-genesis rebuild, and it is NOT tolerable once
+    /// reorgs replay forward from a retained snapshot — so this is the
+    /// out-of-band check that makes the optimisation auditable. It is what the
+    /// equivalence tests compare, what `--selfcheck-reorg` compares on every
+    /// adoption, and what an operator should compare across the pool node, the
+    /// exchange node and a freshly synced wallet before trusting a release.
+    ///
+    /// NON-CONSENSUS: nothing validates against it, and changing it breaks no
+    /// block. Promoting it to a real `state_root` at a future fork height is
+    /// the long-term answer; until then it is a diagnostic.
+    pub fn state_fingerprint(&self) -> Hash32 {
+        // EXHAUSTIVE DESTRUCTURING WITH NO `..` ON PURPOSE. Adding a field to
+        // `Chain` is a COMPILE ERROR until it is accounted for here. Without
+        // that, a new piece of state would silently fall outside the
+        // fingerprint and quietly disarm every differential test and the
+        // adoption self-check at the same time — the failure would be a wrong
+        // balance months later, not a red test.
+        let Chain {
+            params,
+            blocks,
+            utxos,
+            contracts,
+            contract_storage,
+            pools,
+            note_leaves,
+            note_anchors,
+            nullifiers,
+            nft_owner,
+            intel,
+            work_prefix,
+            lane_pos,
+        } = self;
+
+        let mut acc: Vec<u8> = Vec::new();
+        let mut rec = |tag: &str, body: &[u8]| {
+            let mut buf = Vec::with_capacity(tag.len() + 1 + body.len());
+            buf.extend_from_slice(tag.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(body);
+            // Hash each record so the accumulator stays O(records × 32 B)
+            // rather than materialising every contract's code at once.
+            acc.extend_from_slice(&blockle_core::hash::blake2b_256(&buf));
+        };
+
+        // Identity + block sequence. Committing to every header hash (not just
+        // the tip) makes this a commitment to the chain itself, so a test
+        // comparing fingerprints is comparing the assembled block list too.
+        rec("net", params.name.as_bytes());
+        rec("height", &(blocks.len() as u64).to_le_bytes());
+        for b in blocks {
+            rec("block", &b.header.hash());
+        }
+
+        // Derived indexes are included so a divergence in them is visible,
+        // not just a divergence in the state they accelerate.
+        rec("work", &{
+            let mut w = [0u8; 32];
+            work_prefix.last().copied().unwrap_or_else(U256::zero).to_big_endian(&mut w);
+            w
+        });
+        let mut lanes: Vec<(&&str, &Vec<u32>)> = lane_pos.iter().collect();
+        lanes.sort_unstable_by_key(|(l, _)| **l);
+        for (lane, pos) in lanes {
+            rec("lane", format!("{lane}:{}:{:?}", pos.len(), pos.last()).as_bytes());
+        }
+
+        // UTXO set.
+        let mut u: Vec<(&OutPoint, &UtxoEntry)> = utxos.iter().collect();
+        u.sort_unstable_by_key(|(o, _)| (o.txid, o.vout));
+        for (o, e) in u {
+            rec("utxo", format!("{}:{}:{:?}", hex::encode(o.txid), o.vout, e).as_bytes());
+        }
+
+        // Contracts + their storage.
+        let mut c: Vec<_> = contracts.iter().collect();
+        c.sort_unstable_by_key(|(id, _)| **id);
+        for (id, info) in c {
+            rec("contract", format!("{}:{:?}", hex::encode(id), info).as_bytes());
+        }
+        let mut s: Vec<_> = contract_storage.iter().collect();
+        s.sort_unstable_by_key(|(k, _)| **k);
+        for ((id, slot), val) in s {
+            rec(
+                "storage",
+                format!("{}:{}:{}", hex::encode(id), hex::encode(slot), hex::encode(val)).as_bytes(),
+            );
+        }
+
+        // Native AMM.
+        let crate::pools::PoolState { pools: pmap, lp } = pools;
+        let mut p: Vec<_> = pmap.iter().collect();
+        p.sort_unstable_by_key(|(id, _)| **id);
+        for (id, pool) in p {
+            rec("pool", format!("{}:{:?}", hex::encode(id), pool).as_bytes());
+        }
+        let mut l: Vec<_> = lp.iter().collect();
+        l.sort_unstable_by_key(|(k, _)| **k);
+        for ((pool, who), pos) in l {
+            rec(
+                "lp",
+                format!("{}:{}:{:?}", hex::encode(pool), hex::encode(who), pos).as_bytes(),
+            );
+        }
+
+        // Shielded pool. `note_leaves` is ordered (insertion order is
+        // consensus); the two sets are not, so they are sorted.
+        for leaf in note_leaves {
+            rec("leaf", leaf);
+        }
+        let mut a: Vec<&Hash32> = note_anchors.iter().collect();
+        a.sort_unstable();
+        for anchor in a {
+            rec("anchor", anchor);
+        }
+        let mut n: Vec<&Hash32> = nullifiers.iter().collect();
+        n.sort_unstable();
+        for nf in n {
+            rec("nullifier", nf);
+        }
+
+        // Derived NFT ownership index.
+        let mut o: Vec<_> = nft_owner.iter().collect();
+        o.sort_unstable_by_key(|(k, _)| **k);
+        for ((contract, id), owner) in o {
+            rec(
+                "nft",
+                format!(
+                    "{}:{}:{}",
+                    hex::encode(contract),
+                    hex::encode(id),
+                    hex::encode(owner)
+                )
+                .as_bytes(),
+            );
+        }
+
+        // Blockle Intelligence. Destructured exhaustively for the same reason
+        // `Chain` is.
+        let crate::intel::IntelState {
+            subnets,
+            neurons,
+            pool,
+            emission_ledger,
+            commits,
+            revealed,
+            bonds,
+            last_epoch_seed,
+            pov,
+        } = intel;
+        for sn in subnets {
+            rec("subnet", format!("{sn:?}").as_bytes());
+        }
+        for ne in neurons {
+            rec("neuron", format!("{ne:?}").as_bytes());
+        }
+        rec("intelpool", &pool.to_le_bytes());
+        rec("epochseed", last_epoch_seed);
+        let mut el: Vec<_> = emission_ledger.iter().collect();
+        el.sort_unstable_by_key(|(k, _)| **k);
+        for (who, amt) in el {
+            rec("emission", format!("{}:{amt}", hex::encode(who)).as_bytes());
+        }
+        let mut cm: Vec<_> = commits.iter().collect();
+        cm.sort_unstable_by_key(|(k, _)| **k);
+        for (k, v) in cm {
+            rec("commit", format!("{k:?}:{}", hex::encode(v)).as_bytes());
+        }
+        let mut rv: Vec<_> = revealed.iter().collect();
+        rv.sort_unstable_by_key(|(k, _)| **k);
+        for (k, v) in rv {
+            rec("reveal", format!("{k:?}:{v:?}").as_bytes());
+        }
+        let mut bd: Vec<_> = bonds.iter().collect();
+        bd.sort_unstable_by_key(|(k, _)| **k);
+        for (k, v) in bd {
+            rec("bond", format!("{k:?}:{v:?}").as_bytes());
+        }
+        let mut pv: Vec<_> = pov.iter().collect();
+        pv.sort_unstable();
+        for k in pv {
+            rec("pov", format!("{k:?}").as_bytes());
+        }
+
+        blockle_core::hash::blake2b_256(&acc)
     }
 }
 

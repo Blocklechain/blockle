@@ -58,6 +58,8 @@ fn node(tag: &str) -> (std::path::PathBuf, Arc<p2p::Node>, Keypair) {
             mine_blocks: None,
             mine_interval: None,
             pools: vec![],
+            reorg_authority: false,
+            selfcheck_reorg: false,
         },
         chain,
         vec![],

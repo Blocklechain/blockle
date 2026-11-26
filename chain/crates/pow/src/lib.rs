@@ -42,6 +42,11 @@ pub const ENERGY_COEFF_SCALE: u64 = 1_000_000;
 /// | native      | Blockle Equihash (CPU)  | 3.3e0    | 1.0217e9      |
 ///
 /// Unknown lanes fall back to the median (1.0) rather than a privileged weight.
+///
+/// EVERY LANE ADDED HERE MUST ALSO BE ADDED TO [`ENERGY_LANES`], or
+/// [`max_energy_coeff`] silently stops being an upper bound — and a too-low
+/// bound in the p2p header gate is the silent sync stall all over again. The
+/// test `max_energy_coeff_covers_every_lane` enforces it.
 pub fn energy_coeff(lane: &str) -> u64 {
     match lane {
         "sha256d" => 5_420,
@@ -56,6 +61,36 @@ pub fn energy_coeff(lane: &str) -> u64 {
         "native" => 1_021_700_000_000_000,
         _ => ENERGY_COEFF_SCALE,
     }
+}
+
+/// Every lane [`energy_coeff`] knows a weight for. The canonical ordering lives
+/// in `Chain::lanes`; this list exists so [`max_energy_coeff`] is derived from
+/// the table rather than hard-coded alongside it.
+pub const ENERGY_LANES: &[&str] = &[
+    "sha256d",
+    "eaglesong",
+    "kheavyhash",
+    "blake2b",
+    "blake2s",
+    "x11",
+    "blake3",
+    "scrypt",
+    "equihash",
+    "native",
+];
+
+/// The largest weight any lane can carry.
+///
+/// Used to put a ONE-SIDED upper bound on the fork-choice work of a block whose
+/// body — and therefore whose lane — has not arrived yet. See
+/// `Chain::header_work_upper_bound` for why an exact value is impossible and
+/// why erring high is the safe direction. Includes the unknown-lane fallback so
+/// a lane this build does not recognise still cannot exceed the bound.
+pub fn max_energy_coeff() -> u64 {
+    ENERGY_LANES
+        .iter()
+        .map(|l| energy_coeff(l))
+        .fold(ENERGY_COEFF_SCALE, u64::max)
 }
 
 /// Litecoin-style scrypt proof-of-work hash: scrypt(N=1024, r=1, p=1) of
@@ -157,5 +192,31 @@ pub mod parent {
             "kheavyhash" => kheavyhash(header),
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod energy_lane_tests {
+    use super::*;
+
+    /// `max_energy_coeff` is only an UPPER bound if `ENERGY_LANES` lists every
+    /// lane `energy_coeff` gives a non-default weight to. A lane added to the
+    /// table but not the list would make the bound too low — and a too-low
+    /// bound in the header gate is the silent sync stall all over again, so
+    /// this is checked rather than trusted to review.
+    #[test]
+    fn max_energy_coeff_covers_every_lane() {
+        let max = max_energy_coeff();
+        for lane in ENERGY_LANES {
+            assert!(
+                energy_coeff(lane) <= max,
+                "lane {lane} has coeff {} above the claimed max {max}",
+                energy_coeff(lane)
+            );
+        }
+        // The unknown-lane fallback must also be covered.
+        assert!(energy_coeff("a-lane-that-does-not-exist") <= max);
+        // Sanity: the bound is the native lane, by far the heaviest.
+        assert_eq!(max, energy_coeff("native"));
     }
 }

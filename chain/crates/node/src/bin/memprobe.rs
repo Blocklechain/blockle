@@ -155,7 +155,7 @@ fn main() {
     let serialized: usize = chain
         .blocks
         .iter()
-        .map(|b| bincode::serialize(b).map(|v| v.len()).unwrap_or(0))
+        .map(|b| bincode::serialize(&**b).map(|v| v.len()).unwrap_or(0))
         .sum();
     println!("  blocks serialized  {:.0} MB", mb(serialized as u64));
     println!(

@@ -21,7 +21,7 @@
 //! known addresses, and an auto-connect loop dials new peers until the
 //! outbound target is reached.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -38,8 +38,8 @@ use blockle_chain::{build_template, mine_block_cancellable, Chain, ChainParams, 
 use blockle_core::display_hash;
 use blockle_core::hash::Hash32;
 use blockle_core::keys::Address;
-use blockle_core::{Block, BlockHeader, OutPoint, Transaction};
-use blockle_pow::difficulty::{block_work, hash_meets_target};
+use blockle_core::{Block, BlockHeader, Transaction};
+use blockle_pow::difficulty::hash_meets_target;
 use blockle_pow::equihash;
 
 use crate::storage;
@@ -63,6 +63,26 @@ const DEFAULT_SEEDS: &[&str] = &[
     "stratum.shears.co.uk:18444",
 ];
 const HEARTBEAT: Duration = Duration::from_secs(10);
+/// Keep a validated chain snapshot every this many blocks, and retain this many
+/// of them — so a fork rooted up to `SNAP_INTERVAL × SNAP_RING` blocks below our
+/// tip can be resolved by replaying forward from a snapshot instead of
+/// rebuilding from genesis. See [`Node::pick_reorg_base`] for why bounding the
+/// MECHANISM does not bound which forks are acceptable.
+///
+/// SIZED FROM OBSERVATION, AND THE OBSERVATION IS THIN: in a 6-hour window the
+/// live pool node saw peers announcing forks 1-3 blocks below its tip, plus one
+/// peer pinned ~80 blocks below it. The block locator's spacing doubles after
+/// its first 10 entries, so a true depth-d fork resolves to a start height up
+/// to roughly 2d below the tip; 256 covers the observed 80 with headroom. The
+/// fork-depth histogram ([`Node::fork_depth_histogram`]) exists to replace this
+/// guess with data — if real forks turn out to exceed the horizon, the right
+/// shape is a geometric ladder (snapshots at tip-32, -64, -128, -256, -512, …),
+/// which keeps replay O(depth) out to thousands of blocks for ~10 snapshots.
+pub const SNAP_INTERVAL: u64 = 32;
+pub const SNAP_RING: usize = 8;
+/// How many (fork start height, fork tip hash) pairs to remember as "already
+/// weighed and found lighter". See [`Node::remember_rejected_fork`].
+const REJECTED_FORK_MEMORY: usize = 1024;
 /// How often the local miner abandons and rebuilds its block template so the
 /// quiet-lane difficulty decay (which is a function of wall-clock time) takes
 /// effect even when nothing else is moving the tip.
@@ -141,6 +161,26 @@ pub struct NodeConfig {
     /// Stratum server bind address, if enabled.
     /// Stratum pool listeners: (address, pool options).
     pub pools: Vec<(String, crate::stratum::PoolOpts)>,
+    /// ESCAPE HATCH: always rebuild a reorg candidate from genesis, never from
+    /// a retained prefix snapshot.
+    ///
+    /// The bounded path and the from-genesis path are supposed to be the same
+    /// function of the same blocks (see `Chain::from_blocks`, which is kept as
+    /// the reference implementation precisely so this flag can exist). If that
+    /// ever turns out to be false in production, an operator needs a way to run
+    /// the slow, known-correct code without waiting for a new build — this is
+    /// that way. It costs a full from-genesis revalidation per announced fork,
+    /// which at height 82,000 is ~17 minutes, so it is strictly a break-glass
+    /// setting and not a hardening measure.
+    pub reorg_authority: bool,
+    /// CANARY: on every bounded reorg, ALSO build the candidate from genesis
+    /// and refuse the adoption unless the two agree on every byte of state.
+    ///
+    /// This is how the bounded path earns the right to be the silent default:
+    /// run a node with it for a week and the equivalence is a production fact
+    /// rather than a test fixture. It pays the full from-genesis cost on top of
+    /// the cheap path, so it must not be left on anywhere that serves miners.
+    pub selfcheck_reorg: bool,
 }
 
 struct SharedState {
@@ -161,6 +201,23 @@ struct SharedState {
     /// of every request.
     chain: Arc<Chain>,
     mempool: Vec<Transaction>,
+    /// Recently validated prefixes of `chain`, ascending by height — the
+    /// states a bounded reorg replays forward from.
+    ///
+    /// INVARIANT: every entry is a strict prefix of `chain`, i.e. entry `s`
+    /// equals what `chain` was when it held `s.blocks.len()` blocks. Maintained
+    /// by [`Node::record_snapshot`] (which only ever stores the current chain)
+    /// and [`Node::prune_snapshots`] (which drops entries describing a branch
+    /// we just abandoned). NOT TRUSTED on the strength of that invariant: every
+    /// use re-proves it with an O(1) hash comparison, because a bookkeeping bug
+    /// here would mean replaying onto the state of an orphaned branch, which is
+    /// a chain split. See [`Node::pick_reorg_base`].
+    ///
+    /// Each entry costs one pointer per block (0.66 MB of pointers at height
+    /// 82,000) plus a copy of the state maps — affordable only because
+    /// `Chain::blocks` is `Vec<Arc<Block>>`; as `Vec<Block>` each snapshot
+    /// would have pinned ~954 MB of block bodies.
+    snaps: VecDeque<Arc<Chain>>,
 }
 
 struct PeerHandle {
@@ -173,6 +230,19 @@ struct PeerHandle {
     /// dialable address from this + the advertised port rather than trusting
     /// the advertised host (which is typically a 0.0.0.0 bind).
     src: Option<std::net::IpAddr>,
+}
+
+/// Outcome of a bounded (snapshot-based) reorg attempt. The three cases are
+/// deliberately distinct: a bad FORK is a verdict a from-genesis rebuild would
+/// also reach, whereas bad BOOKKEEPING on our side says nothing about the fork
+/// and must fall through to the reference implementation.
+enum Replay {
+    Ok(Chain),
+    /// The peer's blocks do not validate. Final.
+    ForkInvalid,
+    /// A structural check on our own snapshot bookkeeping failed. Retry via
+    /// `Chain::from_blocks`.
+    Degrade,
 }
 
 /// An in-flight headers-first download from one peer.
@@ -202,10 +272,67 @@ pub struct Node {
     next_peer_id: AtomicU64,
     /// Bumped on every tip change; miners poll it to abandon stale work.
     pub(crate) tip_version: AtomicU64,
+    /// Forks already fully validated and found NOT heavier: (fork start height,
+    /// hash of the last block we fetched for it).
+    ///
+    /// SOUND AND PERMANENT, not a cache with a staleness problem: our
+    /// `total_work` only ever increases (both adoption sites either extend the
+    /// tip or require a strictly heavier candidate), so a fork that lost once
+    /// can never win later with the same tip. A peer that EXTENDS that fork
+    /// announces a different last hash and is re-evaluated from scratch.
+    ///
+    /// Only work-gate rejections are recorded here. Validation failures are
+    /// deliberately NOT, because one of `connect_block`'s checks — the
+    /// `header.time > now + max_future_drift` drift limit — loosens as the
+    /// clock advances, so a block that is invalid now can be valid in a minute.
+    rejected_forks: Mutex<(HashSet<(u64, Hash32)>, VecDeque<(u64, Hash32)>)>,
+    /// How many forks were seen at each depth, bucketed by power of two. Pure
+    /// instrumentation: `SNAP_INTERVAL`/`SNAP_RING` were chosen from a single
+    /// 6-hour observation window, and this is how that guess gets replaced by
+    /// measurement. Also the alarm that the snapshot horizon is too short —
+    /// `deep` counts the forks that had to fall back to a from-genesis rebuild.
+    fork_depths: Mutex<(HashMap<u32, u64>, u64)>,
+    /// Total `connect_block` calls ever made while building a reorg candidate.
+    ///
+    /// THIS IS THE REGRESSION ALARM FOR THE ORIGINAL BUG, and it is a counter
+    /// rather than a timer on purpose. The defect was never "reorgs are slow";
+    /// it was "a reorg re-validates the whole chain from genesis, so its cost
+    /// is a function of HEIGHT rather than of fork depth". That is an exact,
+    /// countable property, so `tests/reorg.rs` asserts it exactly: for a fixed
+    /// fork depth, this counter must not grow as the chain gets taller. A
+    /// wall-clock assertion would have to be loose enough to pass on a loaded
+    /// CI box, and a from-genesis rebuild at the heights a test can reach is
+    /// only milliseconds — the original bug would have sailed through a timing
+    /// test at test scale and only bitten at height 58,000.
+    reorg_blocks_connected: AtomicU64,
 }
 
 impl Node {
     pub fn new(config: NodeConfig, chain: Chain, mempool: Vec<Transaction>) -> Arc<Self> {
+        Self::new_with_prefixes(config, chain, mempool, vec![])
+    }
+
+    /// [`Node::new`], seeded with validated prefix states for the reorg ring.
+    ///
+    /// THE STARTUP HALF OF THE BOUNDED-REORG FIX. `Node::new` cannot build
+    /// these itself: a prefix state is destroyed by connecting past it, so
+    /// recovering height-32's state from the tip would mean a second
+    /// from-genesis replay — doubling a startup that already takes ~15 minutes
+    /// at this height. Instead `storage::load_chain_with_prefixes` captures
+    /// them during the replay it was going to do anyway, and hands them here.
+    ///
+    /// Without this, a node that starts up already at the tip has an empty
+    /// ring and takes the from-genesis rebuild for even a depth-1 fork — 17
+    /// minutes at height 82,000, retried every 10 seconds. Both the pool node
+    /// and the exchange node start that way, and so does every wallet: it is
+    /// the reported "stuck at 57999, and reinstalling did not help", because
+    /// reinstalling keeps the datadir and the restart lands in the same hole.
+    pub fn new_with_prefixes(
+        config: NodeConfig,
+        chain: Chain,
+        mempool: Vec<Transaction>,
+        prefixes: Vec<Arc<Chain>>,
+    ) -> Arc<Self> {
         // Seeds = operator --connect peers + the built-in defaults, minus our
         // own listen address (a node must not seed to itself). These are sticky.
         let mut seeds: HashSet<String> = config.connect.iter().cloned().collect();
@@ -216,7 +343,19 @@ impl Node {
         let known: HashSet<String> = seeds.clone();
         Arc::new(Node {
             config,
-            state: Mutex::new(SharedState { chain: Arc::new(chain), mempool }),
+            state: Mutex::new(SharedState {
+                chain: Arc::new(chain),
+                mempool,
+                // Oldest first, as `record_snapshot` maintains it; anything
+                // beyond the ring bound is dropped rather than trusted.
+                snaps: {
+                    let mut q: VecDeque<Arc<Chain>> = prefixes.into_iter().collect();
+                    while q.len() > SNAP_RING {
+                        q.pop_front();
+                    }
+                    q
+                },
+            }),
             peers: Mutex::new(HashMap::new()),
             syncs: Mutex::new(HashMap::new()),
             known_addrs: Mutex::new(known),
@@ -225,6 +364,9 @@ impl Node {
             seeds,
             next_peer_id: AtomicU64::new(1),
             tip_version: AtomicU64::new(0),
+            rejected_forks: Mutex::new((HashSet::new(), VecDeque::new())),
+            fork_depths: Mutex::new((HashMap::new(), 0)),
+            reorg_blocks_connected: AtomicU64::new(0),
         })
     }
 
@@ -710,14 +852,71 @@ impl Node {
             // locators; ignore and let the next heartbeat retry.
             return;
         }
-        let retained_work: U256 = st.chain.blocks[..start]
-            .iter()
-            .fold(U256::zero(), |acc, b| acc.saturating_add(block_work(b.header.bits)));
-        let new_work: U256 = headers
-            .iter()
-            .fold(U256::zero(), |acc, h| acc.saturating_add(block_work(h.bits)));
-        let candidate_work = retained_work.saturating_add(new_work);
-        if candidate_work <= st.chain.total_work() {
+        // THE FETCH GATE IS A ONE-SIDED BOUND, NOT A FORK-CHOICE DECISION.
+        //
+        // THE BUG THIS REPLACES, because it is the most serious one this file
+        // has had: these three lines used to be
+        //
+        //     let retained_work = blocks[..start].fold(+ block_work(bits));
+        //     let new_work      = headers.fold(+ block_work(bits));
+        //     if retained_work + new_work <= st.chain.total_work() { return; }
+        //
+        // — raw `block_work` on the left, ENERGY-WEIGHTED `total_work()` on the
+        // right. Those are the same number only below
+        // `cross_algo_activation_height` (53,000). Above it they drift apart,
+        // and measured on the real mainnet chain our own weighted total
+        // overtook the raw sum by 9.8e16 around height 57,000 — more than the
+        // ~4.9e16 of raw work a full 2000-block batch contributes. From that
+        // point on EVERY announced batch scored as lighter, and this gate took
+        // a bare `return`: no log, no `GetBlocks`, no error. A fresh wallet
+        // synced to a fixed height and then sat there reporting "stuck
+        // updating" forever, and reinstalling did not help because the blocks
+        // that cause it are immutable. Reproduced from genesis on real blocks:
+        // a stall at height 57999, which is the height a Windows user
+        // reported. Seeded at the exchange node's observed start height 53371
+        // it reproduces that node's two adoptions and then stalls at 57370 —
+        // its exact stranded height. The stall height is only a function of
+        // where the 2000-block batch boundary falls, which is why two nodes
+        // stalled at two different heights with one signature.
+        //
+        // The same mismatch ran the other way too: raw overstated weighted by
+        // 0.24% over the whole chain, worth ~200 blocks of free head start, so
+        // the live pool node fetched ~363 phantom forks in 6 hours and threw
+        // every one away after a from-genesis rebuild.
+        //
+        // WHY NOT JUST WEIGHT THE HEADERS. Because it is not possible:
+        // `BlockHeader` carries no lane, `Chain::lane_of` reads
+        // `block.aux_pow.parent_algo` out of the block BODY, and merged-mined
+        // headers are indistinguishable from one another. So the weighted
+        // comparison can only be made once the bodies are in hand, which is
+        // where it now exclusively lives (`adopt_candidate`). Here we only ask
+        // the much weaker question "could this possibly be heavier?", using the
+        // exact weighted work of the prefix we would retain (O(1) via
+        // `work_upto`) plus the most generous weight any lane could give the
+        // announced headers. Overestimating costs a cheap fetch; underestimating
+        // is the stall, so the bound only ever errs high.
+        let retained_work = st.chain.work_upto(start);
+        let best_case_new = headers.iter().enumerate().fold(U256::zero(), |acc, (i, h)| {
+            acc.saturating_add(st.chain.header_work_upper_bound((start + i) as u64, h.bits))
+        });
+        if retained_work.saturating_add(best_case_new) <= st.chain.total_work() {
+            // Now logged. The silent version of this return is what made the
+            // stall undiagnosable from a node's own output.
+            println!(
+                "[p2p] peer {peer_id} announced {} headers from height {start_height} that cannot \
+                 outweigh our chain even at the most favourable weighting; not fetching",
+                headers.len()
+            );
+            return;
+        }
+        // Already ours. The locator resolves to the fork point, so a peer on
+        // our own chain re-announces blocks we already hold; fetching and
+        // re-validating them is pure waste.
+        let announced_end = start + headers.len();
+        if announced_end <= st.chain.blocks.len()
+            && st.chain.blocks[announced_end - 1].header.hash()
+                == headers[headers.len() - 1].hash()
+        {
             return;
         }
         drop(st);
@@ -727,8 +926,16 @@ impl Node {
             .take(MAX_BLOCKS_PER_REQUEST)
             .map(|h| h.hash())
             .collect();
+        // Already weighed and found wanting. Without this the live node
+        // re-fetched and re-validated the same losing fork every heartbeat,
+        // forever — 418 announcements producing 7 adoptions in one 6-hour
+        // window, each rejection preceded by a full chain rebuild.
+        let fork_key = (start_height, *hashes.last().expect("headers is non-empty"));
+        if self.rejected_forks.lock().unwrap().0.contains(&fork_key) {
+            return;
+        }
         println!(
-            "[p2p] peer {peer_id} has heavier chain ({} new headers from height {start_height}); fetching blocks",
+            "[p2p] peer {peer_id} may have a heavier chain ({} new headers from height {start_height}); fetching blocks",
             hashes.len()
         );
         self.syncs
@@ -756,7 +963,7 @@ impl Node {
             let st = self.state.lock().unwrap();
             for b in &st.chain.blocks {
                 if let Some(&i) = want.get(&b.header.hash()) {
-                    found[i] = Some(b.clone());
+                    found[i] = Some((**b).clone());
                 }
             }
         }
@@ -791,13 +998,20 @@ impl Node {
         // blocks onto the existing validated chain is byte-for-byte identical.
         if start == st.chain.blocks.len() {
             let old_height = st.chain.height();
-            let chain = Arc::make_mut(&mut st.chain);
             for b in blocks {
-                if let Err(e) = chain.connect_block(b.clone()) {
+                if let Err(e) = Arc::make_mut(&mut st.chain).connect_block(b.clone()) {
                     println!("[p2p] peer {peer_id} block failed validation during sync: {e}");
                     break; // keep what connected; the next heartbeat fetches the rest
                 }
                 let _ = storage::append_block(&self.config.datadir, &b);
+                // Snapshot INSIDE the loop, not once per batch: batches are up
+                // to 2000 blocks, so snapshotting per batch would leave gaps of
+                // 2000 and a "bounded" reorg would still replay 2000 blocks.
+                // `Arc::make_mut` is therefore re-taken each iteration — it
+                // copies only when a snapshot (or a reader) holds the Arc, i.e.
+                // once every SNAP_INTERVAL blocks, and copies only the state
+                // maps now that block bodies are behind `Arc<Block>`.
+                Self::record_snapshot(&mut st);
             }
             self.prune_mempool(&mut st);
             self.tip_version.fetch_add(1, Ordering::SeqCst);
@@ -813,42 +1027,372 @@ impl Node {
         }
         drop(st);
 
-        // REORG PATH (start < tip) — a fork rooted below our tip. Rare; rebuild from
-        // the shared prefix + the fork's blocks and adopt only if strictly heavier.
-        let prefix: Vec<Block> = {
+        // REORG PATH (start < tip) — a fork rooted below our tip.
+        //
+        // THIS PATH USED TO SAY "Rare" AND THAT COMMENT WAS THE BUG. It did:
+        //
+        //     let prefix: Vec<Block> = st.chain.blocks[..start].to_vec();
+        //     candidate_blocks = prefix ++ blocks;
+        //     Chain::from_blocks(params, candidate_blocks)
+        //
+        // `from_blocks` is `connect_block` in a loop FROM GENESIS, so at height
+        // 58,000 that was 58,000 blocks of PoW and state re-validation per
+        // batch, plus a deep copy of every block body (954 MB at height
+        // 82,000) taken while holding the state lock. Measured on real mainnet
+        // blocks: 30.5 s per attempt at height 58,000 — as much as the entire
+        // from-genesis sync up to that height — and 16 min 59 s at 82,386. The
+        // heartbeat retries every 10 s, so a 17-minute unit of work was
+        // obsolete long before it finished. That is the "100% of one core, no
+        // progress" signature, and it was measured at ~5.5 cores of burn.
+        //
+        // AND IT IS NOT RARE. The headers message starts at the FORK POINT, so
+        // a peer whose chain diverges even ONE block below our tip lands here —
+        // the stranded exchange node's own log shows start_height 53371 against
+        // tip 53372. Ten merge-mined lanes with per-block retargeting produce
+        // shallow forks constantly: heights 57999/58000/58001 are all x11
+        // within two seconds of each other. In one 6-hour window the live pool
+        // node took this path 418 times (and 369 times in another), adopting 7.
+        // "Rare" was wrong by about 60 entries per hour.
+        //
+        // WHAT IT DOES NOW: replay forward from a retained, already-validated
+        // prefix snapshot instead of from genesis. Same `connect_block` calls
+        // on the same blocks in the same order, so the result is the same value
+        // `from_blocks` would have produced — see `pick_reorg_base` for the
+        // argument and the two O(1) structural checks that enforce it. Forks
+        // deeper than the snapshot horizon still take the from-genesis path;
+        // nothing is rejected for being deep.
+        let depth = {
             let st = self.state.lock().unwrap();
+            st.chain.blocks.len().saturating_sub(start)
+        };
+        self.record_fork_depth(depth);
+
+        let (candidate, bounded) = match self.build_reorg_candidate(peer_id, start, &blocks) {
+            Some(v) => v,
+            None => return,
+        };
+        self.adopt_candidate(peer_id, candidate, start, bounded);
+    }
+
+    /// Build the fork's candidate chain, bounded if we hold a usable snapshot
+    /// and from genesis otherwise. Returns `(candidate, took_the_bounded_path)`.
+    ///
+    /// ALL HEAVY VALIDATION HAPPENS HERE, OUTSIDE THE STATE LOCK, and on a
+    /// `Chain` value that is never aliased to the live one — so a candidate
+    /// that fails leaves the node's chain untouched by construction rather than
+    /// by cleanup. The lock is taken only for microsecond-long reads that copy
+    /// block POINTERS.
+    fn build_reorg_candidate(
+        &self,
+        peer_id: u64,
+        start: usize,
+        blocks: &[Block],
+    ) -> Option<(Chain, bool)> {
+        if !self.config.reorg_authority {
+            if let Some((base, common, rejoin)) = self.pick_reorg_base(start) {
+                match self.replay_candidate(peer_id, base, common, start, rejoin, blocks) {
+                    Replay::Ok(c) => return Some((c, true)),
+                    // The fork itself is invalid — a from-genesis rebuild would
+                    // reach the same verdict, so do not pay for one.
+                    Replay::ForkInvalid => return None,
+                    // Our own bookkeeping did not check out. Fall through to
+                    // the reference implementation rather than guess.
+                    Replay::Degrade => {}
+                }
+            }
+        }
+        self.rebuild_candidate(peer_id, start, blocks).map(|c| (c, false))
+    }
+
+    /// Choose the highest retained snapshot that is a genuine prefix of our
+    /// chain at or below `start`, plus the blocks between it and `start`.
+    ///
+    /// WHY A SNAPSHOT IS A SAFE PLACE TO START. `Chain` has no inverse: the only
+    /// state transition is `connect_block`, there is no undo journal, and
+    /// `UtxoEntry` keeps only the creating height, so a spent output's previous
+    /// value is gone the moment it is overwritten. A reorg therefore cannot
+    /// "roll back" to the fork point — the state there can only be REACHED
+    /// FORWARD. Replaying from genesis reaches it; so does replaying from any
+    /// earlier state this node already built with the same `connect_block`
+    /// calls, which is what a snapshot is. Nothing is skipped and nothing is
+    /// inverted: every fork block still goes through the full `connect_block`
+    /// battery. That also disposes of the genuinely hard question a rollback
+    /// would raise — `note_anchors` is a monotone set that is never pruned, so
+    /// un-inserting an orphaned branch's anchor would be a CONSENSUS decision;
+    /// a forward replay simply never contains it, exactly as a from-genesis
+    /// rebuild would not.
+    ///
+    /// THE INVARIANT IS RE-PROVEN, NOT ASSUMED. A snapshot is only eligible if
+    /// its tip hash still equals our chain's block at that height. A snapshot
+    /// left over from an abandoned branch, or a `prune_snapshots` bug, fails
+    /// this and is skipped — so the worst outcome of a bookkeeping error is the
+    /// slow path, never a chain built on an orphan's state.
+    fn pick_reorg_base(&self, start: usize) -> Option<(Arc<Chain>, Vec<Arc<Block>>, Hash32)> {
+        // `start == 0` would mean replacing the chain including genesis; there
+        // is no prefix to start from, so let the deep path handle it.
+        if start == 0 {
+            return None;
+        }
+        let st = self.state.lock().unwrap();
+        if start > st.chain.blocks.len() {
+            return None;
+        }
+        let base = st.snaps.iter().rev().find(|s| {
+            let k = s.blocks.len();
+            k >= 1
+                && k <= start
+                && s.tip_hash() == st.chain.blocks[k - 1].header.hash()
+        })?;
+        let k = base.blocks.len();
+        Some((
+            Arc::clone(base),
+            // Pointer copies, not block copies: at most SNAP_INTERVAL of them.
+            st.chain.blocks[k..start].to_vec(),
+            st.chain.blocks[start - 1].header.hash(),
+        ))
+    }
+
+    /// Bounded reorg: clone a snapshot, replay our own blocks up to the fork
+    /// point, then replay the fork's blocks.
+    fn replay_candidate(
+        &self,
+        peer_id: u64,
+        base: Arc<Chain>,
+        common: Vec<Arc<Block>>,
+        start: usize,
+        rejoin: Hash32,
+        fork: &[Block],
+    ) -> Replay {
+        // Copies the state maps; block bodies are shared via `Arc<Block>`.
+        let mut cand: Chain = (*base).clone();
+        self.reorg_blocks_connected
+            .fetch_add((common.len() + fork.len()) as u64, Ordering::Relaxed);
+        for b in common {
+            if cand.connect_block_arc(b).is_err() {
+                // Our own chain failed to re-connect onto our own snapshot.
+                // That can only be a bug here, so hand over to the reference
+                // implementation rather than reason about it.
+                return Replay::Degrade;
+            }
+        }
+        // REJOIN PROOF. After replaying the common blocks the candidate must be
+        // exactly our chain at `start` — same length, same tip. This is what
+        // catches an off-by-one in the snapshot offsets, or the tip having
+        // moved between `pick_reorg_base` and here. Together with the
+        // prefix proof in `pick_reorg_base` it means the cheap path cannot
+        // assemble a different block sequence than the deep path would have.
+        if cand.blocks.len() != start || cand.tip_hash() != rejoin {
+            return Replay::Degrade;
+        }
+        for b in fork {
+            if let Err(e) = cand.connect_block(b.clone()) {
+                println!(
+                    "[p2p] peer {peer_id} fork from height {start} failed validation: {e}"
+                );
+                return Replay::ForkInvalid;
+            }
+        }
+        if self.config.selfcheck_reorg {
+            // CANARY. Also build the candidate the old way and compare every
+            // byte of state. Costs a full from-genesis rebuild, so it is
+            // opt-in — but it is how the bounded path earns the right to be
+            // the silent default, and it is meant to run on the box for a week
+            // before anyone trusts it.
+            match self.rebuild_candidate(peer_id, start, fork) {
+                Some(reference) => {
+                    if reference.state_fingerprint() != cand.state_fingerprint() {
+                        println!(
+                            "[chain] SELFCHECK FAILED: bounded reorg at height {start} disagrees \
+                             with a from-genesis rebuild — REFUSING the adoption. This is a bug; \
+                             please report it with the node log."
+                        );
+                        return Replay::ForkInvalid;
+                    }
+                    println!("[chain] selfcheck ok: bounded reorg at height {start} matches from_blocks");
+                }
+                None => return Replay::Degrade,
+            }
+        }
+        Replay::Ok(cand)
+    }
+
+    /// From-genesis rebuild: the original reorg path, kept deliberately. It is
+    /// the fallback for forks deeper than the snapshot horizon, the escape
+    /// hatch behind `--reorg-authority`, and the oracle `--selfcheck-reorg`
+    /// compares against. Do not delete it in the name of having one path.
+    fn rebuild_candidate(&self, peer_id: u64, start: usize, blocks: &[Block]) -> Option<Chain> {
+        let mut candidate_blocks: Vec<Arc<Block>> = {
+            let st = self.state.lock().unwrap();
+            if start > st.chain.blocks.len() {
+                return None;
+            }
+            self.note_deep_rebuild();
+            // Pointer copies. This line used to be `blocks[..start].to_vec()`
+            // on a `Vec<Block>` — a ~1 GB deep copy taken under the lock.
             st.chain.blocks[..start].to_vec()
         };
-        let mut candidate_blocks = prefix;
-        candidate_blocks.extend(blocks);
+        candidate_blocks.extend(blocks.iter().cloned().map(Arc::new));
         let n = candidate_blocks.len();
-        // Heavy validation happens outside the state lock.
-        let candidate = match Chain::from_blocks(self.config.params.clone(), candidate_blocks) {
-            Ok(c) => c,
+        // Every block from genesis forward gets re-validated here. This is the
+        // term that used to be the whole bug: it scales with HEIGHT, not with
+        // fork depth.
+        self.reorg_blocks_connected.fetch_add(n as u64, Ordering::Relaxed);
+        match Chain::from_arc_blocks(self.config.params.clone(), candidate_blocks) {
+            Ok(c) => Some(c),
             Err(e) => {
                 println!("[p2p] peer {peer_id} chain of {n} blocks failed validation: {e}");
-                return;
+                None
             }
-        };
-        let cand_work = candidate.total_work();
+        }
+    }
 
+    /// The fork-choice decision, unchanged: adopt only if STRICTLY heavier by
+    /// `Chain::total_work`, both sides energy-weighted by the same function.
+    /// No depth, age or first-seen rule exists or should be added here.
+    fn adopt_candidate(&self, peer_id: u64, candidate: Chain, start: usize, bounded: bool) {
+        let cand_work = candidate.total_work();
         let mut st = self.state.lock().unwrap();
         if cand_work <= st.chain.total_work() {
+            // Logged, where it used to be a bare `return`, and remembered so
+            // the next heartbeat does not re-validate the identical fork.
+            println!(
+                "[chain] fork from peer {peer_id} at height {start} is not heavier \
+                 ({} ≤ {}); keeping our chain",
+                cand_work,
+                st.chain.total_work()
+            );
+            let tip = candidate.tip_hash();
+            drop(st);
+            self.remember_rejected_fork(start as u64, tip);
             return;
         }
         let old_height = st.chain.height();
+        // Captured for the disk write, which happens AFTER the in-memory swap
+        // and OUTSIDE the lock.
+        let tail: Vec<Arc<Block>> = candidate.blocks[start..].to_vec();
+        let anchor = if start == 0 {
+            [0u8; 32]
+        } else {
+            candidate.blocks[start - 1].header.hash()
+        };
         st.chain = Arc::new(candidate);
-        let _ = storage::save_chain(&self.config.datadir, &st.chain.blocks);
+        // Snapshots at or above the fork point describe the branch we just
+        // abandoned. They would fail the prefix proof anyway, but leaving them
+        // in would crowd out the ring with entries that can never be used.
+        Self::prune_snapshots(&mut st, start);
+        Self::record_snapshot(&mut st);
+        // Shielded spends in the mempool that referenced an anchor only the
+        // abandoned branch created now fail `check_transaction` with
+        // `UnknownAnchor` and are evicted here. That was unreachable while a
+        // reorg never completed; with reorgs routine it happens for real.
         self.prune_mempool(&mut st);
         self.tip_version.fetch_add(1, Ordering::SeqCst);
         let (height, total_work, tip) =
             (st.chain.height(), work_bytes(st.chain.total_work()), st.chain.tip_hash());
         println!(
-            "[chain] adopted heavier chain from peer {peer_id}: height {old_height:?} → {height:?}, tip {}",
-            display_hash(&tip)
+            "[chain] adopted heavier chain from peer {peer_id}: height {old_height:?} → {height:?}, tip {} ({} reorg from height {start}, {} blocks)",
+            display_hash(&tip),
+            if bounded { "bounded" } else { "from-genesis" },
+            tail.len()
         );
         drop(st);
+        // Memory first, disk second — a crash in between leaves a valid but
+        // lighter chain on disk, which re-syncs. Rewriting only the tail
+        // replaces a 954 MB whole-file rewrite that ran under the lock.
+        if let Err(e) = storage::rewrite_tail(&self.config.datadir, start, anchor, &tail) {
+            println!("[storage] could not rewrite blocks.jsonl after the reorg: {e}");
+        }
         self.broadcast(Message::Tip { height, total_work, tip }, None);
+    }
+
+    /// Retain the current chain as a replay base, every `SNAP_INTERVAL` blocks.
+    ///
+    /// O(1): an `Arc` clone. The copy it implies is deferred to the next
+    /// `Arc::make_mut` on a block connect, and with `Vec<Arc<Block>>` that copy
+    /// is the state maps rather than every block body.
+    fn record_snapshot(st: &mut SharedState) {
+        let len = st.chain.blocks.len();
+        if len == 0 || (len as u64) % SNAP_INTERVAL != 0 {
+            return;
+        }
+        if st.snaps.back().map(|s| s.blocks.len()) == Some(len) {
+            return;
+        }
+        st.snaps.push_back(Arc::clone(&st.chain));
+        while st.snaps.len() > SNAP_RING {
+            st.snaps.pop_front();
+        }
+    }
+
+    /// Drop snapshots that are no longer prefixes of our chain.
+    fn prune_snapshots(st: &mut SharedState, fork_start: usize) {
+        st.snaps.retain(|s| s.blocks.len() <= fork_start);
+    }
+
+    fn remember_rejected_fork(&self, start_height: u64, tip: Hash32) {
+        let key = (start_height, tip);
+        let mut g = self.rejected_forks.lock().unwrap();
+        let (seen, order) = &mut *g;
+        if seen.insert(key) {
+            order.push_back(key);
+            while order.len() > REJECTED_FORK_MEMORY {
+                if let Some(old) = order.pop_front() {
+                    seen.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn record_fork_depth(&self, depth: usize) {
+        let bucket = 64 - (depth as u64).max(1).leading_zeros(); // ~log2 bucket
+        self.fork_depths.lock().unwrap().0.entry(bucket).and_modify(|c| *c += 1).or_insert(1);
+    }
+
+    fn note_deep_rebuild(&self) {
+        self.fork_depths.lock().unwrap().1 += 1;
+    }
+
+    /// Observed fork depths bucketed by power of two, plus the number of forks
+    /// that exceeded the snapshot horizon and needed a from-genesis rebuild.
+    /// Exposed so `SNAP_INTERVAL`/`SNAP_RING` can be set from data instead of
+    /// from the single observation window they were guessed from.
+    pub fn fork_depth_histogram(&self) -> (Vec<(u32, u64)>, u64) {
+        let g = self.fork_depths.lock().unwrap();
+        let mut v: Vec<(u32, u64)> = g.0.iter().map(|(k, c)| (*k, *c)).collect();
+        v.sort_unstable();
+        (v, g.1)
+    }
+
+    /// Number of retained reorg snapshots (diagnostics and tests).
+    pub fn snapshot_count(&self) -> usize {
+        self.state.lock().unwrap().snaps.len()
+    }
+
+    /// Cumulative `connect_block` calls made while building reorg candidates.
+    /// See the field comment: this is the countable form of "the reorg path's
+    /// cost must depend on fork depth, not on chain height".
+    pub fn reorg_blocks_connected(&self) -> u64 {
+        self.reorg_blocks_connected.load(Ordering::Relaxed)
+    }
+
+    /// TEST SEAM — register an in-flight sync exactly as [`Node::handle_headers`]
+    /// does, then hand the blocks to the real [`Node::handle_blocks`].
+    ///
+    /// Deliberately a seam and not a reimplementation: the properties worth
+    /// testing (which path is taken, the prefix and rejoin proofs, the
+    /// strictly-heavier gate, that a failed candidate leaves the chain
+    /// untouched) all live INSIDE `handle_blocks`, so a test that reimplemented
+    /// its logic would be testing a copy and would have passed happily against
+    /// the from-genesis version of this code. The only thing this skips is the
+    /// socket.
+    #[doc(hidden)]
+    pub fn deliver_blocks_for_test(&self, peer_id: u64, start_height: u64, blocks: Vec<Block>) {
+        let hashes: Vec<Hash32> = blocks.iter().map(|b| b.header.hash()).collect();
+        self.syncs
+            .lock()
+            .unwrap()
+            .insert(peer_id, SyncState { start_height, hashes });
+        self.handle_blocks(peer_id, blocks);
     }
 
     /// Validate and connect a block claiming to extend our tip. Returns true
@@ -871,6 +1415,27 @@ impl Node {
         match Arc::make_mut(&mut st.chain).connect_block(block.clone()) {
             Ok(()) => {
                 let height = st.chain.height().unwrap();
+                /*
+                 * RECORD A REPLAY BASE HERE TOO, OR THE RING FREEZES.
+                 *
+                 * The bulk-sync path (`apply_headers_batch`) called this and
+                 * this path did not, which made the whole bounded-reorg fix
+                 * conditional on HOW a block arrived. A node that is caught up
+                 * receives every block singly — gossip, the local miner, a
+                 * stratum submission — so its ring stopped advancing at the
+                 * last bulk sync, and the replay cost for a FIXED fork depth
+                 * then grew with uptime instead of staying O(depth). After 300
+                 * gossip blocks (50 hours of mainnet) a depth-1 fork was
+                 * already replaying past the documented
+                 * SNAP_INTERVAL × SNAP_RING horizon.
+                 *
+                 * Cheap by construction: `record_snapshot` returns immediately
+                 * unless the height is a multiple of SNAP_INTERVAL, so this is
+                 * a modulo on the common path and an `Arc` clone once every 32
+                 * blocks. Covered by
+                 * `a_node_that_grows_by_gossip_loses_the_snapshot_horizon`.
+                 */
+                Self::record_snapshot(&mut st);
                 let _ = storage::append_block(&self.config.datadir, &block);
                 self.prune_mempool(&mut st);
                 self.tip_version.fetch_add(1, Ordering::SeqCst);

@@ -90,7 +90,7 @@ fn full_chain_revalidates_from_storage() {
         mine_and_connect(&mut chain, &miner, &[]);
     }
     let blocks = chain.blocks.clone();
-    let rebuilt = Chain::from_blocks(params, blocks).unwrap();
+    let rebuilt = Chain::from_arc_blocks(params, blocks).unwrap();
     assert_eq!(rebuilt.height(), Some(3));
     assert_eq!(rebuilt.tip_hash(), chain.tip_hash());
     assert_eq!(rebuilt.balance(&miner.address()), chain.balance(&miner.address()));

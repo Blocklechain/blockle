@@ -108,7 +108,10 @@ pub enum PoolError {
 }
 
 /// Native-AMM state: pools by id, and LP positions by (pool, provider).
-#[derive(Clone, Default)]
+/// `PartialEq`/`Eq` so tests can assert FULL STRUCTURAL equality after a reorg,
+/// not just fingerprint equality: a fingerprint proves two states differ,
+/// structural equality localises which field differs.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct PoolState {
     pub pools: HashMap<Hash32, Pool>,
     pub lp: HashMap<(Hash32, Hash32), LpPosition>,

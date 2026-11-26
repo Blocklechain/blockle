@@ -810,6 +810,7 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                         .iter()
                         .enumerate()
                         .filter(|(_, b)| Chain::lane_of(b) == *lane)
+                        .map(|(h, b)| (h, &**b))
                         .collect();
                     let avg_interval = if blocks.len() >= 2 {
                         let times: Vec<i64> =

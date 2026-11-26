@@ -308,10 +308,10 @@ fn find_block<'a>(chain: &'a Chain, id: &Value) -> Option<(u64, &'a Block)> {
             .iter()
             .enumerate()
             .find(|(_, b)| display_hash(&b.header.hash()) == s)
-            .map(|(h, b)| (h as u64, b));
+            .map(|(h, b)| (h as u64, &**b));
     }
     if let Some(h) = id.as_u64() {
-        return chain.blocks.get(h as usize).map(|b| (h, b));
+        return chain.blocks.get(h as usize).map(|b| (h, &**b));
     }
     None
 }
