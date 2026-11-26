@@ -331,8 +331,13 @@
     .solvency .v { font-size: 30px; }
     /* The drill-down toggle is a real touch target, like every other control
      * here, but NOT full width: it sits inside a table cell beside an asset
-     * name, and stretching it would push the figures off screen. */
-    button.drill { min-height: 36px; padding: 6px 10px; width: auto; }
+     * name, and stretching it would push the figures off screen.
+     *
+     * 44px, not 36px, and the harness is right to insist: this is the control
+     * an operator taps to open a per-user breakdown while reading treasury
+     * figures on a phone, which is exactly when a mis-tap costs the most. Only
+     * the WIDTH is allowed to be intrinsic here; the height is the floor. */
+    button.drill { min-height: 44px; padding: 6px 10px; width: auto; }
   }
 
   @media (prefers-color-scheme: light) {
