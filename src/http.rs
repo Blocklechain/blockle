@@ -3,10 +3,39 @@
 //! no TLS (pools talk to their own nodes on localhost/LAN).
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
+
+/// Connect with the caller's deadline applied to the CONNECT too.
+///
+/// `TcpStream::connect` has no timeout — it waits as long as the OS will,
+/// which for a SYN that is accepted into a backlog and never served, or a host
+/// that drops packets, is minutes. The read and write deadlines below were
+/// always set, so this was the one unbounded wait left in the path: the site
+/// calls the node's explorer API on 8445 to render pages, and the node does not
+/// serve that port until it has replayed the whole chain (~17 minutes after a
+/// restart). blockle-biz then stopped answering at all — active, no log output,
+/// nginx returning 504 on blockle.org — and came back instantly on restart.
+///
+/// `connect_timeout` needs a resolved SocketAddr rather than a host string, so
+/// resolution happens here and the FIRST address is used. That is the same
+/// choice `TcpStream::connect` makes implicitly; the difference is that a
+/// failure to resolve is now an error with the host in it instead of a hang.
+///
+/// biz.rs's pool monitor already did this (`TcpStream::connect_timeout`, 3s).
+/// This file did not, and the inconsistency is what made a routine node
+/// restart take the website down with it.
+fn connect_with_timeout(hostport: &str, timeout: Duration) -> Result<TcpStream> {
+    let addr = hostport
+        .to_socket_addrs()
+        .map_err(|e| anyhow!("cannot resolve {hostport}: {e}"))?
+        .next()
+        .ok_or_else(|| anyhow!("{hostport} resolved to no addresses"))?;
+    TcpStream::connect_timeout(&addr, timeout)
+        .map_err(|e| anyhow!("cannot connect to {hostport} within {timeout:?}: {e}"))
+}
 
 /// Parse `http://host:port[/path]` into (host:port, path).
 pub fn parse_url(url: &str) -> Result<(String, String)> {
@@ -52,7 +81,7 @@ fn base64(data: &[u8]) -> String {
 /// POST a body and return the response body. Timeouts keep probing snappy.
 pub fn get(url: &str, timeout: Duration) -> Result<Vec<u8>> {
     let (host, path) = parse_url(url)?;
-    let mut stream = TcpStream::connect(&host)?;
+    let mut stream = connect_with_timeout(&host, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     write!(
@@ -64,8 +93,7 @@ pub fn get(url: &str, timeout: Duration) -> Result<Vec<u8>> {
 
 pub fn post(url: &str, content_type: &str, body: &[u8], timeout: Duration) -> Result<Vec<u8>> {
     let (hostport, path, auth) = parse_url_auth(url)?;
-    let mut stream = TcpStream::connect(&hostport)
-        .map_err(|e| anyhow!("cannot connect to {hostport}: {e}"))?;
+    let mut stream = connect_with_timeout(&hostport, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let auth_header = auth
