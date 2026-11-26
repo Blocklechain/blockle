@@ -355,24 +355,30 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
             address: None,
             worker: String::new(),
             /*
-             * START AT THE CONFIGURED SHARE FLOOR, NOT THE CHAIN POW LIMIT.
+             * THE CHAIN POW LIMIT, i.e. the EASIEST target, and it has to stay
+             * that way. I changed this to `share_floor_target` and it was a
+             * live regression within the hour.
              *
-             * `share_floor_target` existed on PoolOpts and was only ever read
-             * by stratum_btc.rs; this lane handed every new client
-             * `pow_limit` — 7fff…ffff, the easiest target the chain permits.
-             * Vardiff tightens it within ~30s, but the FIRST mining.set_target
-             * a miner sees is that absurd value, and real ASIC firmware is
-             * entitled to reject a target implying a fractional difficulty.
+             * The reasoning was that the first mining.set_target a miner sees
+             * is 7fff…ffff, which implies a fractional difficulty no real pool
+             * emits, and that ASIC firmware might refuse it. That may even be
+             * true. But `share_floor_target` is the floor stratum_btc.rs uses
+             * for the HARDEST-easiest ASIC start (diff1/initial_diff), which is
+             * orders of magnitude harder than pow_limit — so seeding it here
+             * did not nudge the opening difficulty, it raised the floor vardiff
+             * is allowed to relax to.
              *
-             * It is the second of two deviations found while diagnosing a Z9
-             * Mini that hung up immediately after subscribe (the first being
-             * reply ordering, above). Both are now ecosystem-normal, so the
-             * fix does not depend on which one that firmware objected to.
+             * A CPU miner then cannot produce a share that qualifies, ever, and
+             * the log filled with "share REJECTED: low difficulty share" from
+             * the zec-cpu-miner that had been mining this lane happily — while
+             * each rejected share still cost a full Equihash verification. It
+             * broke small miners and burned CPU doing it.
+             *
+             * Start easy and let vardiff tighten. If a specific firmware does
+             * object to the opening target, the fix is a SEPARATE opening-target
+             * knob with a sane difficulty, not the ASIC floor.
              */
-            share_target: state
-                .opts
-                .share_floor_target
-                .unwrap_or_else(|| state.node.params().pow_limit),
+            share_target: state.node.params().pow_limit,
             window_start: Instant::now(),
             window_shares: 0,
             accepted: 0,
