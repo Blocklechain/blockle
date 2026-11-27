@@ -30,13 +30,40 @@
 //! printed. That is deliberate: anything on stdout can end up in a terminal
 //! scrollback, an SSH session log, or a support transcript.
 
+// UNIX ONLY, AND IT REFUSES RATHER THAN DEGRADES.
+//
+// This tool's safety rests on two things the Unix filesystem gives it: a 0600
+// secret file and a 0700 directory on tmpfs. Windows has neither API
+// (`PermissionsExt` does not exist there), and the obvious fix — compile the
+// permission calls away under `#[cfg(windows)]` — would produce a key generator
+// that writes the clawback authority to a world-readable file while printing
+// "[0600, NOT printed]". A tool that lies about how it protected a key is worse
+// than one that will not run.
+//
+// So the real `main` is Unix-gated and every other platform gets a hard error.
+// It still has to COMPILE everywhere, because CI builds the whole workspace on
+// windows-latest and that job produces the Windows Qt wallet.
+#[cfg(not(unix))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err("clawback-keygen requires Unix file permissions (0600 secret, 0700 directory \
+         on tmpfs) to protect the generated authority keys, and this platform does not \
+         provide them. Generate the authority on the Linux host instead."
+        .into())
+}
+
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use blockle_core::keys::{encode_address, pubkey_to_address, verify_signature, Keypair};
 
+#[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir: PathBuf = std::env::args()
         .nth(1)
@@ -160,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// First 8 bytes of a SHA-256 over the key, as a fingerprint for comparing the
 /// on-box copy against the one you took off without handling the full key.
+#[cfg(unix)]
 fn short_hash(b: &[u8]) -> String {
     let h = blockle_core::hash::sha256d(b);
     hex::encode(&h[..8])
