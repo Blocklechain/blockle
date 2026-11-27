@@ -1037,6 +1037,7 @@ fn route(
         "/open-source" => ("200 OK", "text/html; charset=utf-8", page_open_source(&reg).into_bytes()),
         "/privacy" => ("200 OK", "text/html; charset=utf-8", page_privacy().into_bytes()),
         "/terms" => ("200 OK", "text/html; charset=utf-8", page_terms().into_bytes()),
+        "/v1" => ("200 OK", "text/html; charset=utf-8", page_v1().into_bytes()),
         // Blockle Games hub + developer bounty / rev-share portal.
         "/games" | "/arcade" => ("200 OK", "text/html; charset=utf-8", page_games_hub().into_bytes()),
         "/games/submit" | "/games/build" => ("200 OK", "text/html; charset=utf-8", page_games_submit().into_bytes()),
@@ -3655,6 +3656,168 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
 /// Intelligence consensus activation at block 18888. Wallet pages get a
 /// wallet-user message (update + back up wallet.json); all other pages get the
 /// node-operator/miner upgrade message. Self-removes once the chain passes 18888.
+/// `/v1` — the v1.0.0 consensus upgrade, and the incident that caused it.
+///
+/// This page exists because the upgrade changes what BLOCK *is*. Alienbeing LLC
+/// gains the ability to move holder balances under a two-key authority. A
+/// holder who was not told that is holding a different asset from the one they
+/// believe they hold, so the disclosure is part of the change rather than
+/// commentary on it — and it has to be published BEFORE activation, not after.
+///
+/// Written plainly and without euphemism on purpose. "An incident affecting a
+/// liquidity pool" would be the normal phrasing and it would be a way of not
+/// saying that 49,918 BLOCK was taken because a web endpoint let the caller
+/// state its own prices.
+fn page_v1() -> String {
+    r##"<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blockle v1.0.0 — consensus upgrade at block 88,888</title>
+<meta name="description" content="Blockle v1.0.0 activates at block 88,888. It adds a two-key, rate-limited recovery authority held by Alienbeing LLC, following the theft of 49,918.45 BLOCK from the Liquidity treasury on 26 November 2026. Node operators and miners must upgrade.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://blockle.org/v1">
+<link rel="icon" href="/favicon.ico">
+<style>
+:root{--ground:#0a0d14;--surface:#111725;--line:#1d2535;--text:#e8ebf2;--muted:#8b93a6;--accent:#4d8bff;--warn:#f5a623;--bad:#ff5d6a;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+@media(prefers-color-scheme:light){:root{--ground:#eef1f7;--surface:#fff;--line:#dde3ee;--text:#0b0f1a;--muted:#56617a;--accent:#2f6bf0}}
+:root[data-theme="dark"]{--ground:#0a0d14;--surface:#111725;--line:#1d2535;--text:#e8ebf2;--muted:#8b93a6;--accent:#4d8bff}
+:root[data-theme="light"]{--ground:#eef1f7;--surface:#fff;--line:#dde3ee;--text:#0b0f1a;--muted:#56617a;--accent:#2f6bf0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:0 24px}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line);padding:18px 0}
+header .wrap{display:flex;align-items:center;gap:10px}
+.brand{font-weight:800;font-size:17px;letter-spacing:-.02em;color:var(--text);text-decoration:none}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.15;letter-spacing:-.03em;margin:34px 0 6px}
+h2{font-size:20px;letter-spacing:-.01em;margin:38px 0 10px;padding-top:16px;border-top:1px solid var(--line)}
+.lede{font-size:18px;color:var(--muted);margin:0 0 8px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--warn);font-weight:600}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:18px 0}
+.card.warn{border-color:var(--warn)}
+code,.mono{font-family:var(--mono);font-size:13px;word-break:break-all}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.scroll{overflow-x:auto}
+ul{padding-left:20px}li{margin:6px 0}
+footer{border-top:1px solid var(--line);margin-top:48px;padding:22px 0 60px;color:var(--muted);font-size:13px}
+</style></head><body>
+<header><div class="wrap"><a class="brand" href="/">Blockle</a><span style="color:var(--muted)">/ v1.0.0</span></div></header>
+<div class="wrap">
+
+<p class="eyebrow" style="margin-top:30px">Consensus upgrade &middot; block 88,888</p>
+<h1>Blockle v1.0.0</h1>
+<p class="lede">A two-key, rate-limited recovery authority, added after 49,918.45&nbsp;BLOCK
+was taken from the Liquidity treasury on 26&nbsp;November&nbsp;2026.</p>
+
+<div class="card warn">
+<b>If you run a node or mine Blockle, you must upgrade before block 88,888.</b>
+A node on an older binary will reject blocks that follow the new rule and will
+fork off the network. Wallets with an embedded node are affected the same way —
+update the app. Wallets that only talk to a remote node are not.
+</div>
+
+<h2>What happened</h2>
+<p>At 23:15:51&nbsp;CET on 26&nbsp;November a request to the Liquidity swap endpoint
+exchanged <code>0.0000000000000000001&nbsp;SOL</code> for <b>49,918.44927956&nbsp;BLOCK</b>,
+and it settled on chain in block&nbsp;86,030.</p>
+<p>The endpoint calculated the trade from a price <em>supplied in the request</em>.
+A dust input paired with an asserted astronomical price produced any dollar
+figure the caller wanted, and that figure bought BLOCK at the curve price. The
+same party probed the endpoint ten times beforehand, and the same host also sent
+forged <code>support@blockle.org</code> mail and ran roughly 2,900 SSH
+authentication attempts against the server. None of those succeeded; the pricing
+bug did.</p>
+<p>The treasury was left holding 0.0124469 of a 50,000&nbsp;BLOCK seed.</p>
+
+<h2>What was not affected</h2>
+<ul>
+<li><b>The chain was not exploited.</b> Block 86,030 is a valid, correctly signed
+transaction. The ledger did what it was told; a web service decided to pay out.</li>
+<li><b>No wallet, seed or private key was involved.</b> Nothing about the
+post-quantum key derivation or the wallet software was implicated.</li>
+<li><b>No customer funds.</b> The coins taken were the pool's own inventory.</li>
+<li><b>Mining, emission and the supply schedule</b> are untouched.</li>
+</ul>
+
+<h2>What is already fixed</h2>
+<ul>
+<li>Swap pricing is now resolved <b>server-side</b>. A price in a request is
+ignored, and a coin the server cannot price is refused rather than guessed at.</li>
+<li>A per-coin minimum trade size, so a dust input is not a trade.</li>
+<li>A per-swap ceiling, so no single request can drain inventory.</li>
+<li>On-chain settlement for the pool is <b>disabled</b> until aggregate
+rate-limiting and a bounded hot-wallet float are in place.</li>
+</ul>
+
+<h2>What v1.0.0 adds, and what it means for holders</h2>
+<p>Read this part carefully, because it changes the asset.</p>
+<p><b>Alienbeing LLC, which owns Blockle, can move BLOCK balances.</b> The
+authority is deliberately constrained, and the constraints are enforced by
+consensus rather than by policy:</p>
+<div class="scroll"><table>
+<tr><th>Constraint</th><th>Effect</th></tr>
+<tr><td>Two-of-two signatures</td><td>Two independent ML-DSA-44 post-quantum keys, both required. One compromised key authorises nothing.</td></tr>
+<tr><td class="n">100,000 BLOCK / 7 days</td><td>A rolling cap measured in consensus time. Even with both keys, no more than this can move per window — so a key compromise is bounded and there is time to publish replacement addresses.</td></tr>
+<tr><td>Strictly increasing nonce</td><td>A recovery transaction cannot be captured and replayed.</td></tr>
+<tr><td>Moves only</td><td>It cannot create BLOCK, cannot exceed what the named outputs hold, and cannot alter emission.</td></tr>
+<tr><td>Height-gated</td><td>Inert below block 88,888. Every earlier block validates exactly as before.</td></tr>
+</table></div>
+<p>The two authority addresses are compiled into the software and published here.
+Changing either requires a new release and a new activation height that every
+node must adopt — the same bar as any other consensus change. There is no
+runtime switch, no administrative endpoint, and no way to widen the authority
+without the network's participation.</p>
+<div class="card">
+<div class="mono">block1vky3mpkfhrvf8rn8ujymeuxdsdwyxtv849ue3e5ec5yz33f8u3psqryh6r</div>
+<div class="mono" style="margin-top:6px">block1k4d3vs23e7cej2kxmu6lm84x8nlp2jqe6xqaf9vdlu2z9q93vvcscm8qfm</div>
+</div>
+<p>Both private keys were generated in volatile memory, exported under separate
+passphrases, and erased from the server. Neither was ever written to that
+machine's persistent storage, and nothing running on it can sign a recovery
+transaction.</p>
+<p>If a recovery authority is not acceptable to you, that is a reasonable
+position, and this page exists so the choice is yours to make rather than one
+made for you quietly.</p>
+
+<h2>Timing</h2>
+<div class="scroll"><table>
+<tr><th>Block</th><th></th></tr>
+<tr><td class="n">86,030</td><td>The theft settled</td></tr>
+<tr><td class="n">88,888</td><td>v1.0.0 activates &mdash; <span id="eta" class="mono">checking&hellip;</span></td></tr>
+</table></div>
+<p>Blocks arrive roughly every 16&nbsp;seconds across the ten merge-mined lanes,
+so the window from publication to activation is on the order of hours. That is
+shorter than the notice given for previous upgrades, and the reason is that the
+authority is of no use after the coins move.</p>
+
+<h2>Still outstanding</h2>
+<p>Stated here rather than left for someone to discover:</p>
+<ul>
+<li>The 49,918.45&nbsp;BLOCK has not been recovered. It is unmoved at
+<code>block1dt0tm0v5gvpz6lp80nkcjkp2wkf3pfxtwt3q4ua4xlspezl64tps9mjj58</code>.</li>
+<li>The pool's price curve is still derived partly from the fraudulent swap flow
+and will be corrected.</li>
+<li>Pool settlement stays disabled until the remaining rate limits ship.</li>
+</ul>
+
+<footer><div>Blockle is the intellectual property of Alienbeing LLC. All rights reserved.</div>
+<div style="margin-top:6px"><a href="/">Home</a> &middot; <a href="/terms">Terms</a> &middot; <a href="/network">Network</a> &middot; <a href="https://github.com/blocklechain/blockle">Source</a></div></footer>
+</div>
+<script>
+fetch('/api/explorer/stats').then(function(r){return r.json()}).then(function(d){
+  var e=document.getElementById('eta');if(!e||!d)return;var h=d.height||0;
+  if(!h){e.textContent='height unavailable';return}
+  if(h>=88888){e.textContent='active since block '+h.toLocaleString();return}
+  var left=88888-h,hrs=Math.round(left*16.4/3600);
+  e.textContent=left.toLocaleString()+' blocks to go'+(hrs>0?' (~'+hrs+' h)':'');
+}).catch(function(){});
+</script>
+</body></html>"##
+        .to_string()
+}
+
 fn inject_upgrade_banner(html: Vec<u8>, path: &str) -> Vec<u8> {
     let s = match String::from_utf8(html) {
         Ok(s) => s,
@@ -3665,26 +3828,31 @@ fn inject_upgrade_banner(html: Vec<u8>, path: &str) -> Vec<u8> {
     }
     let is_wallet = path == "/wallet" || path.starts_with("/wallet/");
     let msg = if is_wallet {
-        "<b>Network upgrade at block 18&#8203;888.</b> Blockle Intelligence goes live. \
-         Please <b>update your wallet</b> to the latest version — and <b>back up your \
-         <code>wallet.json</code></b> (Wallet &rsaquo; Backup / Export) before then."
+        "<b>Blockle v1.0.0 — consensus upgrade at block 88&#8203;888.</b> \
+         Please <b>update your wallet</b> before then: wallets with an embedded node will \
+         stop following the network otherwise. Back up your <code>wallet.json</code> \
+         (Wallet &rsaquo; Backup / Export) first."
     } else {
-        "<b>Consensus upgrade at block 18&#8203;888</b><span id=\"blk-eta\"></span>: Blockle \
-         Intelligence activates. <b>Node operators &amp; miners must upgrade before then</b> or \
-         you will fork off the network. Wallet users: update your wallet &amp; back up your \
-         <code>wallet.json</code>."
+        "<b>Blockle v1.0.0 — consensus upgrade at block 88&#8203;888</b>\
+         <span id=\"blk-eta\"></span>. Adds the Alienbeing LLC recovery authority \
+         following a theft from the Liquidity treasury on 26 Nov. \
+         <b>Node operators &amp; miners must upgrade before then</b> or you will fork off \
+         the network."
     };
     let banner = format!(
         r#"<div id="blk-upg-bar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:2147483000;background:#0b1220;color:#e7eefc;border-top:2px solid #f5a623;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 -6px 24px rgba(0,0,0,.35)">
 <div style="max-width:1080px;margin:0 auto;padding:11px 46px 11px 16px;display:flex;align-items:center;gap:10px">
 <span style="font-size:17px;flex:none">&#9888;&#65039;</span>
-<span style="flex:1">{msg} <a href="/intelligence" style="color:#8ec5ff;font-weight:600;white-space:nowrap">Details &rsaquo;</a></span>
+<span style="flex:1">{msg} <a href="/v1" style="color:#8ec5ff;font-weight:600;white-space:nowrap">What changed &rsaquo;</a></span>
 </div>
-<button onclick="try{{localStorage.setItem('blk-intel-18888','1')}}catch(e){{}};document.getElementById('blk-upg-bar').style.display='none'" aria-label="Dismiss" style="position:absolute;top:50%;right:12px;transform:translateY(-50%);background:transparent;border:0;color:#9fb0cc;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+<button onclick="try{{localStorage.setItem('blk-v1-88888','1')}}catch(e){{}};document.getElementById('blk-upg-bar').style.display='none'" aria-label="Dismiss" style="position:absolute;top:50%;right:12px;transform:translateY(-50%);background:transparent;border:0;color:#9fb0cc;font-size:22px;cursor:pointer;line-height:1">&times;</button>
 </div>
-<script>(function(){{var H=18888,bar=document.getElementById('blk-upg-bar');if(!bar)return;try{{if(localStorage.getItem('blk-intel-18888'))return;}}catch(e){{}}
+<script>(function(){{var H=88888,bar=document.getElementById('blk-upg-bar');if(!bar)return;try{{if(localStorage.getItem('blk-v1-88888'))return;}}catch(e){{}}
 bar.style.display='block';document.body.style.paddingBottom='64px';
-fetch('/api/explorer/intel').then(function(r){{return r.json()}}).then(function(d){{if(!d)return;var A=d.activation_height||H,h=d.height||0,act=d.active===true||h>=A;if(act){{bar.style.display='none';document.body.style.paddingBottom=''}}else{{var e=document.getElementById('blk-eta');if(e&&h>0){{e.textContent=' ('+(A-h).toLocaleString()+' blocks to go)'}}}}}}).catch(function(){{}});
+// Height from the explorer, and the bar HIDES once the fork is past so it
+// cannot rot into a notice nobody remembers to remove — the previous banner
+// sat dead in every page for 69,000 blocks because its height had long gone.
+fetch('/api/explorer/stats').then(function(r){{return r.json()}}).then(function(d){{if(!d)return;var h=d.height||0;if(h>=H){{bar.style.display='none';document.body.style.paddingBottom='';return}}var e=document.getElementById('blk-eta');if(e&&h>0){{var left=H-h,hrs=Math.round(left*16.4/3600);e.textContent=' — '+left.toLocaleString()+' blocks to go'+(hrs>0?' (~'+hrs+'h)':'')}}}}).catch(function(){{}});
 }})();</script>
 "#,
         msg = msg
