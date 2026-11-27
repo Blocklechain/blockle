@@ -177,6 +177,24 @@ pub enum ContractAction {
     LaunchNft { code: Vec<u8>, gas_limit: u64 },
     /// Blockle Intelligence action (height-gated; see `IntelAction`).
     Intel(IntelAction),
+    /// Alienbeing LLC clawback (height-gated; see `blockle_chain::clawback`).
+    ///
+    /// Moves `outpoints` to `dest`. Requires BOTH authority signatures over
+    /// `clawback::signing_payload`, a nonce greater than any previously
+    /// accepted, and a total within the rolling 100,000 BLOCK / 7-day cap.
+    ///
+    /// MOVES ONLY — it cannot create BLOCK, exceed what the named outputs hold,
+    /// or touch the emission schedule.
+    ///
+    /// Appended LAST so existing encodings keep their variant indices and old
+    /// blocks decode unchanged.
+    Clawback {
+        outpoints: Vec<OutPoint>,
+        dest: [u8; 32],
+        nonce: u64,
+        pubkeys: [Vec<u8>; 2],
+        sigs: [Vec<u8>; 2],
+    },
 }
 
 impl ContractAction {
@@ -192,6 +210,8 @@ impl ContractAction {
             ContractAction::LaunchToken { gas_limit, .. } => *gas_limit,
             ContractAction::LaunchNft { gas_limit, .. } => *gas_limit,
             ContractAction::Intel(a) => a.gas_limit(),
+            // Not a VM execution: no contract runs, so no gas is metered.
+            ContractAction::Clawback { .. } => 0,
         }
     }
 
@@ -208,6 +228,8 @@ impl ContractAction {
             ContractAction::LaunchToken { block_amt, .. } => *block_amt,
             ContractAction::LaunchNft { .. } => 0,
             ContractAction::Intel(a) => a.value(),
+            // Moves EXISTING outputs; nothing flows from this tx's inputs.
+            ContractAction::Clawback { .. } => 0,
         }
     }
 }
@@ -442,6 +464,33 @@ impl Transaction {
                 put_u32(&mut out, *subnet_id);
                 put_u32(&mut out, *uid);
                 put_u64(&mut out, *gas_limit);
+            }
+            // CLAWBACK — tag 11 (0..9 are the earlier actions, 10 is Intel with
+            // inner sub-tags), appended so every historical encoding stays
+            // byte-identical.
+            //
+            // The authority signatures are included and NOT blanked by
+            // `blank_sigs`. They are made over `clawback::signing_payload`,
+            // which is independent of this transaction, so they already exist
+            // when the tx is signed — and binding them means a captured
+            // transaction's clawback signatures cannot be swapped for a
+            // different authorised pair while its input signature still
+            // verifies.
+            Some(ContractAction::Clawback { outpoints, dest, nonce, pubkeys, sigs }) => {
+                put_u32(&mut out, 11);
+                put_u64(&mut out, *nonce);
+                put_fixed(&mut out, dest);
+                put_u32(&mut out, outpoints.len() as u32);
+                for o in outpoints {
+                    put_fixed(&mut out, &o.txid);
+                    put_u32(&mut out, o.vout);
+                }
+                for pk in pubkeys {
+                    put_bytes(&mut out, pk);
+                }
+                for sg in sigs {
+                    put_bytes(&mut out, sg);
+                }
             }
         }
         out

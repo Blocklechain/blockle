@@ -127,6 +127,11 @@ pub struct Chain {
     /// Blockle Intelligence consensus state (subnet/neuron registries). Empty and
     /// inert until `params.intel_activation_height`. See crate::intel.
     pub intel: crate::intel::IntelState,
+    /// Alienbeing LLC clawback authority state: the highest nonce accepted and
+    /// the exercised history that enforces the rolling 100,000 BLOCK / 7-day
+    /// cap. Inert until `params.clawback_activation_height`. See
+    /// crate::clawback.
+    pub clawback: crate::clawback::ClawbackState,
     /// Prefix sums of the fork-choice work metric: `work_prefix[n]` is the
     /// total work of `blocks[..n]`, so `work_prefix.len() == blocks.len() + 1`
     /// and `work_prefix[0] == 0`.
@@ -190,6 +195,7 @@ impl Chain {
             nullifiers: HashSet::new(),
             nft_owner: HashMap::new(),
             intel: crate::intel::IntelState::default(),
+            clawback: crate::clawback::ClawbackState::default(),
             work_prefix: vec![U256::zero()],
             lane_pos: HashMap::new(),
         }
@@ -1193,6 +1199,10 @@ impl Chain {
         let mut nview = self.nullifiers.clone();
         let mut lview = self.note_leaves.clone();
         let mut iview = self.intel.clone();
+        // Clawback authority state, as a view like every other piece of state
+        // here: validated and mutated per-transaction, committed only if the
+        // whole block validates.
+        let mut cbview = self.clawback.clone();
         let mut fees: u64 = 0;
         let mut gas_total: u64 = 0;
         let mut block_logs: Vec<([u8; 32], Vec<u8>)> = Vec::new();
@@ -1218,6 +1228,63 @@ impl Chain {
                 &mut lview, &mut iview, self.params.intel_epoch_len,
             );
             block_logs.extend(logs);
+
+            // -- CLAWBACK (Alienbeing LLC authority; see crate::clawback) ----
+            //
+            // Validated HERE, not in apply_tx_effects, so an invalid clawback
+            // makes the whole BLOCK invalid. If it were merely ignored down
+            // there, a block could carry a forged or over-cap clawback and
+            // still be accepted — every node would ignore it identically, so
+            // there would be no split, but garbage would be permanently
+            // recorded as though it had been authorised.
+            if let Some(ContractAction::Clawback { outpoints, dest, nonce, pubkeys, sigs }) =
+                &tx.contract
+            {
+                if height < self.params.clawback_activation_height {
+                    return Err(ChainError::ContractRules(
+                        "clawback action before its activation height".into(),
+                    ));
+                }
+                let authority =
+                    crate::clawback::authority_from(&self.params.clawback_authority)
+                        .map_err(ChainError::ContractRules)?;
+                let auth = crate::clawback::ClawbackAuth {
+                    outpoints: outpoints.clone(),
+                    dest: *dest,
+                    nonce: *nonce,
+                    pubkeys: pubkeys.clone(),
+                    sigs: sigs.clone(),
+                };
+                // MTP, not block time: a miner picks its own timestamp within
+                // the drift window, and the rolling cap must not be widened by
+                // choosing one. The borrow of `view` is scoped so the output
+                // reassignment below can take it mutably.
+                let mtp_u = mtp.max(0) as u64;
+                let total = {
+                    let amount_of =
+                        |o: &OutPoint| view.get(o).map(|e| e.output.amount);
+                    crate::clawback::validate(
+                        &auth,
+                        &cbview,
+                        &authority,
+                        height,
+                        self.params.clawback_activation_height,
+                        mtp_u,
+                        &amount_of,
+                    )
+                    .map_err(|e| ChainError::ContractRules(e.to_string()))?
+                };
+                // Reassign ownership. Amount, height and coinbase flag are
+                // untouched: this changes WHO owns an output and nothing else,
+                // so supply and maturity accounting are unaffected by
+                // construction.
+                for o in &auth.outpoints {
+                    if let Some(entry) = view.get_mut(o) {
+                        entry.output.recipient = auth.dest;
+                    }
+                }
+                cbview.record(mtp_u, total, auth.nonce);
+            }
         }
 
         // -- Coinbase amount --
@@ -1275,6 +1342,7 @@ impl Chain {
         self.nullifiers = nview;
         self.note_leaves = lview;
         self.intel = iview;
+        self.clawback = cbview;
         self.index_nft_logs(&block_logs);
         // Derived indexes, maintained in the same commit so they can never
         // describe a block that failed validation. Order matters only in that
@@ -1385,6 +1453,7 @@ impl Chain {
             nullifiers,
             nft_owner,
             intel,
+            clawback,
             work_prefix,
             lane_pos,
         } = self;
@@ -1537,6 +1606,20 @@ impl Chain {
         pv.sort_unstable();
         for k in pv {
             rec("pov", format!("{k:?}").as_bytes());
+        }
+
+        // CLAWBACK AUTHORITY STATE. In the fingerprint because it is consensus
+        // state: the nonce decides whether a replay is accepted and the history
+        // decides whether the rolling cap has room. Two nodes that disagreed on
+        // either would disagree on validity, so a differential test has to see
+        // it.
+        let crate::clawback::ClawbackState { last_nonce, history } = clawback;
+        rec("cbnonce", &last_nonce.to_le_bytes());
+        for h in history {
+            rec(
+                "cbhist",
+                format!("{}:{}:{}", h.mtp, h.amount, h.nonce).as_bytes(),
+            );
         }
 
         blockle_core::hash::blake2b_256(&acc)

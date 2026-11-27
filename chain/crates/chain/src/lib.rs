@@ -5,6 +5,7 @@ pub mod block20;
 pub mod block721;
 pub mod stablecoin;
 pub mod chain;
+pub mod clawback;
 pub mod contracts;
 pub mod genesis;
 pub mod intel;

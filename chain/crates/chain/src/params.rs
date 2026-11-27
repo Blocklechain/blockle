@@ -81,6 +81,17 @@ pub struct ChainParams {
     /// raw hashrate. Pre-fork blocks keep validating under the independent rule.
     /// `u64::MAX` = disabled.
     pub cross_algo_activation_height: u64,
+    /// The two Alienbeing LLC clawback authority addresses, bech32. BOTH must
+    /// sign; either alone authorises nothing. Kept as bech32 rather than raw
+    /// bytes so a human reviewing a diff can actually check them.
+    pub clawback_authority: [&'static str; 2],
+    /// Height at which `ContractAction::Clawback` activates. Below it such a
+    /// transaction is rejected, so pre-fork blocks validate unchanged.
+    /// `u64::MAX` = disabled.
+    ///
+    /// Every mainnet node/miner/wallet MUST run a binary carrying this rule
+    /// before this height or it will fork off.
+    pub clawback_activation_height: u64,
 }
 
 impl ChainParams {
@@ -153,6 +164,17 @@ impl ChainParams {
             // power draw. Every mainnet node/miner MUST run a binary carrying
             // this rule before height 53,000 or it will fork off.
             cross_algo_activation_height: 53_000,
+            // Alienbeing LLC clawback authority (generated 2026-11-27; both
+            // secrets held off-host under separate passphrases, neither ever
+            // written to this host's persistent storage).
+            clawback_authority: [
+                "block1vky3mpkfhrvf8rn8ujymeuxdsdwyxtv849ue3e5ec5yz33f8u3psqryh6r",
+                "block1k4d3vs23e7cej2kxmu6lm84x8nlp2jqe6xqaf9vdlu2z9q93vvcscm8qfm",
+            ],
+            // Activates at 88,888 — ~1,300 blocks past the tip at authoring
+            // (87,6xx, ~16.4 s/block), matching the upgrade window the intel
+            // and cross-algo forks were given.
+            clawback_activation_height: 88_888,
         }
     }
 
