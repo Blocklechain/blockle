@@ -335,15 +335,63 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   // ---- fee intake -----------------------------------------------------------
   // Deposit a bot fee: feeUsd worth of `coin` joins that coin's reserve. coinUsd
   // is the coin's live USD price (stablecoins pinned to 1 if omitted).
-  async function accrueFee(coin, feeUsd, coinUsd) {
+  // Coins a bot fee may legitimately be taken in. A fee in anything else is not
+  // a fee the treasury can hold, and a reserve row for a coin it cannot hold is
+  // a claim on liquidity that does not exist.
+  const FEE_COINS = new Set([...STABLE, ...EVM_COINS, ...SOL_COINS]);
+
+  // No single bot fee is plausibly larger than this. The cap exists because
+  // totalFeesUsd feeds priceFloorUsd: an unbounded fee is an unbounded move in
+  // BLOCK's computed floor, from one request.
+  const MAX_FEE_USD = 1000;
+
+  /**
+   * Credit a bot fee to the treasury.
+   *
+   * WHAT THIS USED TO ACCEPT, AND WHY IT MATTERED. The coin was whatever the
+   * caller named and `coinUsd` -- the DIVISOR turning a fee into a reserve --
+   * was whatever the caller claimed. The route in front of it was public, so
+   * any request on the internet could add a treasury row for any symbol at any
+   * price. That is how ZZZ, this codebase's own placeholder for a token that
+   * does not exist (it appears nowhere but tests, including one asserting "no
+   * synthetic price is fabricated"), came to sit in live reserves AND live fees
+   * at 0.01.
+   *
+   * Three things followed from one request: the fee headline was overstated,
+   * priceFloorUsd (= seed + totalFeesUsd / CURVE_REF_BOUGHT) moved BLOCK's real
+   * computed floor, and reserves[coin] asserted a holding the treasury does not
+   * have -- which the swap path pays out against. A small claimed coinUsd mints
+   * a large fake reserve, so the divisor was the sharpest end of it.
+   *
+   * `opts.priceFor` is the SERVER's own resolver. Pricing is no longer something
+   * a request can assert, and a coin the server cannot price is a fee it
+   * declines rather than guesses at.
+   */
+  async function accrueFee(coin, feeUsd, _callerPriceIgnored, opts = {}) {
     const c = String(coin || '').toUpperCase();
     const fee = +feeUsd;
     if (!c || !(fee > 0)) return { ok: false, error: 'bad fee' };
-    const cu = STABLE.has(c) ? 1 : (+coinUsd > 0 ? +coinUsd : 0);
-    if (!(cu > 0)) return { ok: false, error: 'coin price required' };
+    if (!FEE_COINS.has(c)) return { ok: false, error: 'unsupported fee coin' };
+    if (!Number.isFinite(fee) || fee > MAX_FEE_USD) {
+      return { ok: false, error: 'fee out of range' };
+    }
+    // Stablecoins are pinned; everything else must be priced BY US.
+    let cu = 0;
+    if (STABLE.has(c)) {
+      cu = 1;
+    } else if (typeof opts.priceFor === 'function') {
+      try { cu = +(await opts.priceFor(c)) || 0; } catch { cu = 0; }
+    }
+    if (!(cu > 0)) return { ok: false, error: 'coin price unavailable' };
     const t = load();
     t.reserves[c] = (+t.reserves[c] || 0) + fee / cu;
     t.fees[c] = (+t.fees[c] || 0) + fee;
+    // AN AUDIT TRAIL. The old version only incremented, so a total could not be
+    // attributed to trades and a fabricated fee was indistinguishable from a
+    // real one after the fact. Bounded so it cannot grow without end.
+    t.feeLog = Array.isArray(t.feeLog) ? t.feeLog : [];
+    t.feeLog.push({ coin: c, feeUsd: fee, coinUsd: cu, uid: opts.uid || null, at: now() });
+    if (t.feeLog.length > 2000) t.feeLog = t.feeLog.slice(-2000);
     await save(t);
     return { ok: true };
   }

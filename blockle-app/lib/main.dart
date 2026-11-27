@@ -75,6 +75,11 @@ void main() {
         ChangeNotifierProvider<ExchangeController>(
           create: (ctx) {
             final mc = ctx.read<MultichainController>();
+            // The liquidity singleton needs the SAME session, for the one call
+            // that writes to the shared treasury. Wired here rather than in
+            // the service so there is a single place the account token is
+            // handed out. See LiquidityService.accountToken.
+            LiquidityService.instance.accountToken = () => mc.moonpayBearer;
             return ExchangeController(bearer: () => mc.moonpayBearer);
           },
         ),

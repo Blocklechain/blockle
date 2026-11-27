@@ -923,14 +923,34 @@ export function createApp(overrides = {}) {
   // would inflate the ledger with nothing backing it (3.47 phantom USDC taught
   // us). Clients must mark mode:'live'; posts without it (incl. older app
   // builds) get an ok-but-uncredited response so they never error.
-  on('POST', /^\/account\/api\/liquidity\/fee$/, async (req, res) => {
-    res.setHeader('access-control-allow-origin', '*');
+  // AUTHENTICATED, because it writes to the treasury.
+  //
+  // This route was public with access-control-allow-origin '*' and nothing but
+  // an IP rate limit in front of it, while passing the caller's own coin, fee
+  // and PRICE into accrueFee. Anyone could add a treasury row for any symbol at
+  // any price; the `mode !== 'live'` check is no defence, since the caller
+  // declares its own mode. A live bot runs under a signed-in user, so a session
+  // is the correct bar and the CORS wildcard goes with it.
+  //
+  // Already-shipped wallets post no Authorization header, so their fees stop
+  // being credited rather than being credited unverifiably. That is the safe
+  // direction: those figures were never attributable to a trade.
+  on('POST', /^\/account\/api\/liquidity\/fee$/, authed(async (req, res, { u }) => {
     if (!loginIpRl.allow('liqfee:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 4 * 1024).catch(() => ({}));
     if (b.mode !== 'live') return json(res, 200, { ok: true, credited: false, reason: 'paper/unmarked fees are not credited' });
-    try { return json(res, 200, await liquidity.accrueFee(b.coin, b.feeUsd, b.coinUsd)); }
-    catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'fee failed') }); }
-  });
+    try {
+      return json(res, 200, await liquidity.accrueFee(b.coin, b.feeUsd, null, {
+        uid: u.id,
+        // The server's own price resolver. BLOCK and BLOCK-20 are never priced
+        // by it, which is also why they can never be a fee coin here.
+        priceFor: async (sym) => {
+          const m = await prices.resolve([{ chain: '', kind: 'native', symbol: sym }]);
+          return m[':native:' + String(sym).toUpperCase()] ?? Object.values(m)[0] ?? null;
+        },
+      }));
+    } catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'fee failed') }); }
+  }));
   // SETTLE a swap on-chain: the user posts the txid of their deposit to the
   // treasury hot wallet; the relayer verifies it + pays out the output asset.
   // GATED by LIQUIDITY_MAINNET (returns 503 while the gate is off — no funds move).

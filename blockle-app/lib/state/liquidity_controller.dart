@@ -35,6 +35,19 @@ class LiquidityService extends ChangeNotifier {
   final _store = const FlutterSecureStorage();
   final PriceService _priceSvc = PriceService(serverBase: _serverBase);
 
+  /// The Blockle account session, for the one call that WRITES to the shared
+  /// treasury.
+  ///
+  /// `/account/api/liquidity/fee` used to be unauthenticated, and because it
+  /// took the coin, the fee AND the coin's price from the request body, any
+  /// caller on the internet could add a treasury row for any symbol at any
+  /// price — which is how a fabricated `ZZZ` reserve and fee came to be in
+  /// live state, inflating the fee total and BLOCK's computed price floor. The
+  /// server now requires a session and prices the coin itself; this is how a
+  /// real bot proves it is a real user. Set from the same place the exchange
+  /// client gets its bearer.
+  String? Function()? accountToken;
+
   /// True once the SERVER treasury (authoritative, shared) has answered — its
   /// reserves then replace the local preview. Custodial addresses + the on-chain
   /// settlement gate come from the server too.
@@ -176,12 +189,24 @@ class LiquidityService extends ChangeNotifier {
     }
   }
 
-  // Record the fee into the SERVER treasury (best-effort, rate-limited server-side).
+  // Record the fee into the SERVER treasury (best-effort, rate-limited and now
+  // AUTHENTICATED server-side — see [accountToken]).
   void _postFee(String coin, double feeUsd, double coinUsd, String mode) {
     if (!serverBacked) return;
+    final t = accountToken?.call();
+    // No session, no post. The server would answer 401, and firing a request
+    // that cannot be credited on every fee just burns the rate limit and
+    // teaches whoever reads the logs to ignore them.
+    if (t == null || t.isEmpty) return;
     unawaited(http
         .post(Uri.parse('$_serverBase/account/api/liquidity/fee'),
-            headers: const {'content-type': 'application/json'},
+            headers: {
+              'content-type': 'application/json',
+              'authorization': 'Bearer $t',
+            },
+            // coinUsd is still sent for older servers, but a current one
+            // IGNORES it and prices the coin itself: a fee's value must not be
+            // something its payer gets to assert.
             body: jsonEncode(
                 {'coin': coin, 'feeUsd': feeUsd, 'coinUsd': coinUsd, 'mode': mode}))
         .timeout(const Duration(seconds: 8))
